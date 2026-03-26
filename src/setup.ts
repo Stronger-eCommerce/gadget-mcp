@@ -62,7 +62,7 @@ export async function runSetup(): Promise<void> {
   console.log();
   console.log(fmt.header("  ◆ Gadget MCP Setup"));
   console.log(fmt.dim("  Connect any Gadget app to Claude Code or Cursor"));
-  console.log(fmt.dim("  by Stronger eCommerce · stronger-ecommerce.com"));
+  console.log(fmt.dim("  by Stronger eCommerce · strongerecommerce.com"));
   console.log();
 
   // 1. Auto-detect app from .gadget/sync.json

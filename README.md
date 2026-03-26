@@ -3,7 +3,7 @@
 Generic read-only MCP server for any [Gadget](https://gadget.dev) app.
 Query any model via GraphQL introspection — no generated client required.
 
-Built by [Stronger eCommerce](https://stronger-ecommerce.com).
+Built by [Stronger eCommerce](https://strongerecommerce.com).
 
 ---
 
@@ -116,4 +116,4 @@ Once connected, ask Claude:
 
 ## About
 
-Made with ♥ by [Stronger eCommerce](https://stronger-ecommerce.com) — Shopify development and eCommerce operations.
+Made with ♥ by [Stronger eCommerce](https://strongerecommerce.com) — Shopify development and eCommerce operations.
