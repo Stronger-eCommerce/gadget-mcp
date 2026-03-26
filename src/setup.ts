@@ -2,6 +2,7 @@ import { readFileSync, existsSync, writeFileSync } from "fs";
 import { createInterface } from "readline";
 import { join, dirname } from "path";
 import { homedir } from "os";
+import { createRequire } from "module";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 const c = {
@@ -32,6 +33,40 @@ const fmt = {
   },
 };
 
+// ── Version check ─────────────────────────────────────────────────────────────
+const PKG_NAME = "@stronger-ecommerce/gadget-mcp";
+
+function currentVersion(): string {
+  try {
+    const req = createRequire(import.meta.url);
+    return (req("../package.json") as { version: string }).version;
+  } catch {
+    return "0.0.0";
+  }
+}
+
+export async function checkForUpdate(): Promise<void> {
+  try {
+    const res = await fetch(`https://registry.npmjs.org/${PKG_NAME}/latest`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return;
+    const { version: latest } = await res.json() as { version: string };
+    const current = currentVersion();
+    if (latest !== current) {
+      const w = 60;
+      const line = "─".repeat(w);
+      console.error(`${c.yellow}${line}${c.reset}`);
+      console.error(`${c.yellow}  Update available: ${c.bold}${current}${c.reset}${c.yellow} → ${c.bold}${latest}${c.reset}`);
+      console.error(`${c.yellow}  Run: ${c.bold}npm i -g ${PKG_NAME}@latest${c.reset}${c.yellow}  or use npx for the latest${c.reset}`);
+      console.error(`${c.yellow}${line}${c.reset}`);
+      console.error();
+    }
+  } catch {
+    // network unavailable — silently skip
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 interface SyncJson {
   application: string;
@@ -55,8 +90,14 @@ function mask(key: string): string {
   return key.slice(0, 4) + "····" + key.slice(-4);
 }
 
+function apiKeysUrl(app: string, env: string): string {
+  return `https://${app}.gadget.app/edit/${env}/settings/api-keys`;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 export async function runSetup(): Promise<void> {
+  await checkForUpdate();
+
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
   console.log();
@@ -105,7 +146,7 @@ export async function runSetup(): Promise<void> {
 
   // 4. API key
   console.log();
-  console.log(fmt.info(`Get your API key at: ${c.cyan}https://${appSlug}.gadget.app/edit/settings/api-keys${c.reset}`));
+  console.log(fmt.info(`Get your API key at: ${c.cyan}${apiKeysUrl(appSlug, environment)}${c.reset}`));
   const apiKey = await prompt(rl, `  ${fmt.label("API key")}: `);
   if (!apiKey.trim()) {
     console.log("\n" + fmt.error("API key is required."));

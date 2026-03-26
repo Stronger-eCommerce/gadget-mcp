@@ -30,6 +30,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { handleTool, TOOL_DEFINITIONS } from "./tools.js";
+import { checkForUpdate } from "./setup.js";
 
 const GADGET_APP = process.env.GADGET_APP;
 const GADGET_API_KEY = process.env.GADGET_API_KEY;
@@ -50,6 +51,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   return handleTool(name, (args ?? {}) as Record<string, any>);
 });
+
+checkForUpdate(); // fire-and-forget; prints to stderr so MCP stdio is unaffected
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
