@@ -3,6 +3,36 @@ import { createInterface } from "readline";
 import { join, dirname } from "path";
 import { homedir } from "os";
 
+// ── ANSI helpers ──────────────────────────────────────────────────────────────
+const c = {
+  reset:  "\x1b[0m",
+  bold:   "\x1b[1m",
+  dim:    "\x1b[2m",
+  cyan:   "\x1b[36m",
+  green:  "\x1b[32m",
+  yellow: "\x1b[33m",
+  red:    "\x1b[31m",
+  blue:   "\x1b[34m",
+  gray:   "\x1b[90m",
+  white:  "\x1b[97m",
+};
+
+const fmt = {
+  header:  (s: string) => `${c.bold}${c.cyan}${s}${c.reset}`,
+  success: (s: string) => `${c.green}✔${c.reset}  ${s}`,
+  info:    (s: string) => `${c.blue}ℹ${c.reset}  ${s}`,
+  warn:    (s: string) => `${c.yellow}⚠${c.reset}  ${s}`,
+  error:   (s: string) => `${c.red}✖${c.reset}  ${s}`,
+  label:   (s: string) => `${c.bold}${c.white}${s}${c.reset}`,
+  dim:     (s: string) => `${c.dim}${s}${c.reset}`,
+  code:    (s: string) => `${c.cyan}${s}${c.reset}`,
+  section: (title: string, width = 60) => {
+    const line = "─".repeat(width);
+    return `${c.gray}${line}${c.reset}\n${c.bold} ${title}${c.reset}\n${c.gray}${line}${c.reset}`;
+  },
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 interface SyncJson {
   application: string;
   environment?: string;
@@ -22,13 +52,18 @@ function prompt(rl: ReturnType<typeof createInterface>, question: string): Promi
 
 function mask(key: string): string {
   if (key.length <= 8) return "****";
-  return key.slice(0, 4) + "****" + key.slice(-4);
+  return key.slice(0, 4) + "····" + key.slice(-4);
 }
 
+// ── Main ──────────────────────────────────────────────────────────────────────
 export async function runSetup(): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-  console.log("\n🔧 Gadget MCP Setup\n");
+  console.log();
+  console.log(fmt.header("  ◆ Gadget MCP Setup"));
+  console.log(fmt.dim("  Connect any Gadget app to Claude Code or Cursor"));
+  console.log(fmt.dim("  by Stronger eCommerce · stronger-ecommerce.com"));
+  console.log();
 
   // 1. Auto-detect app from .gadget/sync.json
   let appSlug = "";
@@ -39,40 +74,41 @@ export async function runSetup(): Promise<void> {
     try {
       const sync: SyncJson = JSON.parse(readFileSync(syncPath, "utf8"));
       appSlug = sync.application ?? "";
-      console.log(`✅ Detected Gadget app: ${appSlug} (from ${syncPath})`);
+      console.log(fmt.success(`Detected Gadget app ${fmt.label(appSlug)}`));
+      console.log(fmt.dim(`           from ${syncPath}`));
     } catch {
-      console.log(`⚠️  Found ${syncPath} but couldn't parse it.`);
+      console.log(fmt.warn(`Found ${syncPath} but couldn't parse it.`));
     }
   } else {
-    console.log("ℹ️  No .gadget/sync.json found in this directory tree.");
+    console.log(fmt.info("No .gadget/sync.json found — you can enter the app slug manually."));
   }
+  console.log();
 
   // 2. Confirm or enter app slug
   const appInput = await prompt(
     rl,
     appSlug
-      ? `App slug [${appSlug}]: `
-      : "App slug (e.g. my-app): "
+      ? `  ${fmt.label("App slug")} ${c.dim}[${appSlug}]${c.reset}: `
+      : `  ${fmt.label("App slug")} ${c.dim}(e.g. my-app)${c.reset}: `
   );
   if (appInput.trim()) appSlug = appInput.trim();
 
   if (!appSlug) {
-    console.error("❌ App slug is required.");
+    console.log("\n" + fmt.error("App slug is required."));
     rl.close();
     process.exit(1);
   }
 
   // 3. Environment
-  const envInput = await prompt(rl, `Environment [production]: `);
+  const envInput = await prompt(rl, `  ${fmt.label("Environment")} ${c.dim}[production]${c.reset}: `);
   if (envInput.trim()) environment = envInput.trim();
 
   // 4. API key
-  console.log(
-    `\nGet your API key at: https://${appSlug}.gadget.app/edit/settings/api-keys`
-  );
-  const apiKey = await prompt(rl, "API key: ");
+  console.log();
+  console.log(fmt.info(`Get your API key at: ${c.cyan}https://${appSlug}.gadget.app/edit/settings/api-keys${c.reset}`));
+  const apiKey = await prompt(rl, `  ${fmt.label("API key")}: `);
   if (!apiKey.trim()) {
-    console.error("❌ API key is required.");
+    console.log("\n" + fmt.error("API key is required."));
     rl.close();
     process.exit(1);
   }
@@ -80,29 +116,35 @@ export async function runSetup(): Promise<void> {
 
   // 5. Server name
   const defaultName = `${appSlug}-gadget`;
-  const nameInput = await prompt(rl, `MCP server name [${defaultName}]: `);
+  const nameInput = await prompt(rl, `  ${fmt.label("MCP server name")} ${c.dim}[${defaultName}]${c.reset}: `);
   const serverName = nameInput.trim() || defaultName;
 
   rl.close();
 
-  // 6. Output results
-  console.log(`\n✅ Setup complete for ${appSlug} (${mask(trimmedKey)})\n`);
+  // ── Results ────────────────────────────────────────────────────────────────
+  console.log();
+  console.log(fmt.success(`Setup complete for ${fmt.label(appSlug)} ${c.dim}(key: ${mask(trimmedKey)})${c.reset}`));
+  console.log();
 
   const npxCmd = `npx @stronger-ecommerce/gadget-mcp`;
 
-  console.log("── Claude Code ─────────────────────────────────────────────");
-  console.log(`Run this command:\n`);
-  console.log(
+  // Claude Code
+  console.log(fmt.section("  Claude Code"));
+  console.log();
+  console.log(`  Run this command:\n`);
+  const claudeCmd =
     `  claude mcp add ${serverName} \\\n` +
     `    -e GADGET_APP=${appSlug} \\\n` +
     (environment !== "production" ? `    -e GADGET_ENVIRONMENT=${environment} \\\n` : "") +
     `    -e GADGET_API_KEY=${trimmedKey} \\\n` +
-    `    -- ${npxCmd}\n`
-  );
+    `    -- ${npxCmd}`;
+  console.log(fmt.code(claudeCmd));
+  console.log();
 
-  // 7. Offer to auto-write Cursor config
+  // Cursor
+  console.log(fmt.section("  Cursor  (~/.cursor/mcp.json)"));
+
   const cursorConfig = join(homedir(), ".cursor", "mcp.json");
-  console.log("── Cursor ──────────────────────────────────────────────────");
 
   let existing: Record<string, any> = { mcpServers: {} };
   if (existsSync(cursorConfig)) {
@@ -114,7 +156,7 @@ export async function runSetup(): Promise<void> {
     }
   }
 
-  const entry: Record<string, any> = {
+  existing.mcpServers[serverName] = {
     command: "npx",
     args: ["@stronger-ecommerce/gadget-mcp"],
     env: {
@@ -124,20 +166,19 @@ export async function runSetup(): Promise<void> {
     },
   };
 
-  existing.mcpServers[serverName] = entry;
   const configJson = JSON.stringify(existing, null, 2);
 
+  console.log();
   if (existsSync(cursorConfig)) {
-    console.log(`\nFound existing ${cursorConfig}.`);
-    console.log(`Would add "${serverName}" to mcpServers. Preview:\n`);
+    console.log(fmt.info(`Updating existing ${cursorConfig}`));
   } else {
-    console.log(`\nWould create ${cursorConfig}. Preview:\n`);
+    console.log(fmt.info(`Creating ${cursorConfig}`));
   }
-  console.log(configJson);
+  console.log(fmt.dim(configJson.split("\n").map(l => "  " + l).join("\n")));
+  console.log();
 
-  // We can't prompt after rl.close(), so just write it
   writeFileSync(cursorConfig, configJson, "utf8");
-  console.log(`\n✅ Written to ${cursorConfig}`);
-  console.log("\nRestart Cursor to pick up the new MCP server.");
-  console.log("─────────────────────────────────────────────────────────\n");
+  console.log(fmt.success(`Written to ${cursorConfig}`));
+  console.log(fmt.dim("           Restart Cursor to pick up the new MCP server."));
+  console.log();
 }

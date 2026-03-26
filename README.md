@@ -3,7 +3,28 @@
 Generic read-only MCP server for any [Gadget](https://gadget.dev) app.
 Query any model via GraphQL introspection — no generated client required.
 
-## Setup
+Built by [Stronger eCommerce](https://stronger-ecommerce.com).
+
+---
+
+## Quick setup (recommended)
+
+Run the interactive setup wizard from inside your Gadget project directory.
+It auto-detects your app slug from `.gadget/sync.json` and writes your config automatically.
+
+```bash
+npx @stronger-ecommerce/gadget-mcp setup
+```
+
+The wizard will:
+1. Detect your app slug from `.gadget/sync.json` (if present)
+2. Prompt for your API key and environment
+3. Output the ready-to-run `claude mcp add` command for Claude Code
+4. Automatically write your `~/.cursor/mcp.json` for Cursor
+
+---
+
+## Manual setup
 
 ### 1. Get a production API key
 
@@ -59,6 +80,8 @@ Add to `~/.cursor/mcp.json`:
 }
 ```
 
+---
+
 ## Environment variables
 
 | Variable             | Required | Default      | Description                          |
@@ -66,6 +89,8 @@ Add to `~/.cursor/mcp.json`:
 | `GADGET_APP`         | Yes      | —            | App slug, e.g. `my-app`              |
 | `GADGET_API_KEY`     | Yes      | —            | Production API key                   |
 | `GADGET_ENVIRONMENT` | No       | `production` | `production` or `development`        |
+
+---
 
 ## Tools
 
@@ -77,6 +102,8 @@ Add to `~/.cursor/mcp.json`:
 | `get_record`       | Fetch a single record by ID                                |
 | `run_graphql`      | Run a raw read-only GraphQL query (mutations are blocked)  |
 
+---
+
 ## Example usage
 
 Once connected, ask Claude:
@@ -84,3 +111,9 @@ Once connected, ask Claude:
 - *"Show me the fields on the shopifyOrder model"*
 - *"Find orders where email is customer@example.com"*
 - *"Get all records with errors"*
+
+---
+
+## About
+
+Made with ♥ by [Stronger eCommerce](https://stronger-ecommerce.com) — Shopify development and eCommerce operations.
