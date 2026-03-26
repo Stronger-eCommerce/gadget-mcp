@@ -21,13 +21,13 @@ claude mcp add my-app-gadget \
 Register multiple apps under different names:
 
 ```bash
-claude mcp add brightpearl-gadget \
-  -e GADGET_APP=brightpearl \
+claude mcp add app-one-gadget \
+  -e GADGET_APP=my-first-app \
   -e GADGET_API_KEY=key1 \
   -- npx @stronger-ecommerce/gadget-mcp
 
-claude mcp add store-gadget \
-  -e GADGET_APP=my-store \
+claude mcp add app-two-gadget \
+  -e GADGET_APP=my-second-app \
   -e GADGET_API_KEY=key2 \
   -- npx @stronger-ecommerce/gadget-mcp
 ```
@@ -39,19 +39,19 @@ Add to `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "brightpearl-gadget": {
+    "app-one-gadget": {
       "command": "npx",
-      "args": ["gadget-mcp"],
+      "args": ["@stronger-ecommerce/gadget-mcp"],
       "env": {
-        "GADGET_APP": "brightpearl",
+        "GADGET_APP": "my-first-app",
         "GADGET_API_KEY": "key1"
       }
     },
-    "store-gadget": {
+    "app-two-gadget": {
       "command": "npx",
-      "args": ["gadget-mcp"],
+      "args": ["@stronger-ecommerce/gadget-mcp"],
       "env": {
-        "GADGET_APP": "my-store",
+        "GADGET_APP": "my-second-app",
         "GADGET_API_KEY": "key2"
       }
     }
@@ -61,26 +61,26 @@ Add to `~/.cursor/mcp.json`:
 
 ## Environment variables
 
-| Variable            | Required | Default        | Description                          |
-|---------------------|----------|----------------|--------------------------------------|
-| `GADGET_APP`        | Yes      | —              | App slug, e.g. `brightpearl`         |
-| `GADGET_API_KEY`    | Yes      | —              | Production API key                   |
-| `GADGET_ENVIRONMENT`| No       | `production`   | `production` or `development`        |
+| Variable             | Required | Default      | Description                          |
+|----------------------|----------|--------------|--------------------------------------|
+| `GADGET_APP`         | Yes      | —            | App slug, e.g. `my-app`              |
+| `GADGET_API_KEY`     | Yes      | —            | Production API key                   |
+| `GADGET_ENVIRONMENT` | No       | `production` | `production` or `development`        |
 
 ## Tools
 
-| Tool               | Description                                                   |
-|--------------------|---------------------------------------------------------------|
-| `list_models`      | List all models available in the app                         |
-| `introspect_model` | Show fields and types for a model                            |
-| `query_records`    | Query any model with filters and field selection             |
-| `get_record`       | Fetch a single record by ID                                  |
-| `run_graphql`      | Run a raw read-only GraphQL query (mutations are blocked)    |
+| Tool               | Description                                                |
+|--------------------|------------------------------------------------------------|
+| `list_models`      | List all models available in the app                       |
+| `introspect_model` | Show fields and types for a model                          |
+| `query_records`    | Query any model with filters and field selection           |
+| `get_record`       | Fetch a single record by ID                                |
+| `run_graphql`      | Run a raw read-only GraphQL query (mutations are blocked)  |
 
 ## Example usage
 
 Once connected, ask Claude:
 - *"List the models in my Gadget app"*
 - *"Show me the fields on the shopifyOrder model"*
-- *"Find orders where brightpearlSoId is 12345"*
-- *"Get all labels with errors"*
+- *"Find orders where email is customer@example.com"*
+- *"Get all records with errors"*

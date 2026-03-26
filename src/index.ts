@@ -4,36 +4,36 @@
  *
  * ── CONFIG ──────────────────────────────────────────────────────────────────
  * Required env vars:
- *   GADGET_APP         App slug, e.g. "brightpearl" or "my-other-app"
+ *   GADGET_APP         App slug, e.g. "my-app"
  *   GADGET_API_KEY     Production API key from <app>.gadget.app/edit/settings/api-keys
  *
  * Optional:
  *   GADGET_ENVIRONMENT "production" (default) | "development"
  *
  * ── REGISTER IN CLAUDE CODE ─────────────────────────────────────────────────
- *   claude mcp add brightpearl-gadget \
- *     -e GADGET_APP=brightpearl \
+ *   claude mcp add my-app-gadget \
+ *     -e GADGET_APP=my-app \
  *     -e GADGET_API_KEY=your_key \
- *     -- npx tsx /Users/jayfriedmann/brightpearl/mcp/index.ts
+ *     -- npx @stronger-ecommerce/gadget-mcp
  *
  *   # For a second app:
- *   claude mcp add myapp-gadget \
+ *   claude mcp add my-other-app-gadget \
  *     -e GADGET_APP=my-other-app \
  *     -e GADGET_API_KEY=other_key \
- *     -- npx tsx /Users/jayfriedmann/brightpearl/mcp/index.ts
+ *     -- npx @stronger-ecommerce/gadget-mcp
  *
  * ── REGISTER IN CURSOR (~/.cursor/mcp.json) ─────────────────────────────────
  *   {
  *     "mcpServers": {
- *       "brightpearl-gadget": {
+ *       "app-one-gadget": {
  *         "command": "npx",
- *         "args": ["tsx", "/Users/jayfriedmann/brightpearl/mcp/index.ts"],
- *         "env": { "GADGET_APP": "brightpearl", "GADGET_API_KEY": "your_key" }
+ *         "args": ["@stronger-ecommerce/gadget-mcp"],
+ *         "env": { "GADGET_APP": "my-first-app", "GADGET_API_KEY": "your_key" }
  *       },
- *       "myapp-gadget": {
+ *       "app-two-gadget": {
  *         "command": "npx",
- *         "args": ["tsx", "/Users/jayfriedmann/brightpearl/mcp/index.ts"],
- *         "env": { "GADGET_APP": "my-other-app", "GADGET_API_KEY": "other_key" }
+ *         "args": ["@stronger-ecommerce/gadget-mcp"],
+ *         "env": { "GADGET_APP": "my-second-app", "GADGET_API_KEY": "other_key" }
  *       }
  *     }
  *   }
@@ -127,7 +127,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           fields: {
             type: "string",
             description:
-              "GraphQL field selection, e.g. \"id name brightpearlSoId email createdAt\" or \"id trackingNumber error errorMessage\"",
+              "GraphQL field selection, e.g. \"id name email createdAt\" or \"id trackingNumber error errorMessage\"",
           },
           filter: {
             type: "object",
@@ -159,7 +159,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           fields: {
             type: "string",
-            description: "GraphQL field selection, e.g. \"id name email brightpearlSoId\"",
+            description: "GraphQL field selection, e.g. \"id name email createdAt\"",
           },
         },
       },
