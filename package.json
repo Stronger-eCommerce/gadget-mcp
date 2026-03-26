@@ -1,6 +1,6 @@
 {
   "name": "@stronger-ecommerce/gadget-mcp",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Generic read-only MCP server for any Gadget app",
   "type": "module",
   "bin": {
