@@ -90,6 +90,27 @@ function mask(key: string): string {
   return key.slice(0, 4) + "····" + key.slice(-4);
 }
 
+async function testConnection(app: string, env: string, apiKey: string): Promise<{ ok: boolean; models?: number; error?: string }> {
+  const url = env === "development"
+    ? `https://${app}--development.gadget.app/api/graphql`
+    : `https://${app}.gadget.app/api/graphql`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ query: "{ __schema { queryType { fields { name } } } }" }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const json = await res.json() as any;
+    if (json.errors?.length) return { ok: false, error: json.errors[0].message };
+    const count = json.data?.__schema?.queryType?.fields?.length ?? 0;
+    return { ok: true, models: count };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 function apiKeysUrl(app: string, env: string): string {
   return `https://${app}.gadget.app/edit/${env}/settings/api-keys`;
 }
@@ -394,5 +415,28 @@ export async function runSetup(): Promise<void> {
   writeFileSync(cursorConfig, configJson, "utf8");
   console.log(fmt.success(`Written to ${cursorConfig}`));
   console.log(fmt.dim("           Restart Cursor to pick up the new MCP server."));
+  console.log();
+
+  // ── Connection test ───────────────────────────────────────────────────────
+  console.log(fmt.section("  Testing connection"));
+  console.log();
+  process.stdout.write(`  Connecting to ${c.cyan}${appSlug}.gadget.app${c.reset}… `);
+  const test = await testConnection(appSlug, environment, trimmedKey);
+  if (test.ok) {
+    console.log(`${c.green}✔${c.reset}`);
+    console.log();
+    console.log(fmt.success(`Connected! Found ${c.bold}${test.models}${c.reset} queryable fields.`));
+    console.log(fmt.dim("           Your MCP server is ready to use."));
+  } else {
+    console.log(`${c.red}✖${c.reset}`);
+    console.log();
+    console.log(fmt.error(`Connection failed: ${test.error}`));
+    console.log();
+    console.log(`  Things to check:`);
+    console.log(`  ${c.dim}·${c.reset} Did you deploy the role? ${c.cyan}ggt push${c.reset}`);
+    console.log(`  ${c.dim}·${c.reset} Does the API key have the ${c.bold}${roleToUse}${c.reset} role assigned?`);
+    console.log(`  ${c.dim}·${c.reset} Is the app slug correct? ${c.dim}(${appSlug})${c.reset}`);
+    console.log(`  ${c.dim}·${c.reset} Check keys at: ${c.cyan}${apiKeysUrl(appSlug, environment)}${c.reset}`);
+  }
   console.log();
 }
