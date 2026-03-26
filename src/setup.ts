@@ -100,16 +100,78 @@ function permissionsUrl(app: string, env: string): string {
 
 const MCP_ROLE = "gadget-mcp-read";
 
-function detectRole(syncPath: string | null): boolean | null {
-  if (!syncPath) return null; // can't check — no project root
+function permissionsFilePath(syncPath: string): string | null {
   try {
-    const projectRoot = dirname(dirname(syncPath)); // up from .gadget/
-    const permFile = join(projectRoot, "accessControl", "permissions.gadget.ts");
-    if (!existsSync(permFile)) return null;
-    return readFileSync(permFile, "utf8").includes(`"${MCP_ROLE}"`);
+    const projectRoot = dirname(dirname(syncPath));
+    const p = join(projectRoot, "accessControl", "permissions.gadget.ts");
+    return existsSync(p) ? p : null;
   } catch {
     return null;
   }
+}
+
+// Extract all unique model names from every models: {} block in the file
+function extractModels(content: string): string[] {
+  const models = new Set<string>();
+  const modelsBlockRe = /models:\s*\{/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = modelsBlockRe.exec(content)) !== null) {
+    const open = content.indexOf("{", m.index);
+    let depth = 0, i = open, close = open;
+    for (; i < content.length; i++) {
+      if (content[i] === "{") depth++;
+      else if (content[i] === "}") { depth--; if (depth === 0) { close = i; break; } }
+    }
+    const block = content.slice(open + 1, close);
+
+    // Collect top-level keys (depth 0 inside the block)
+    let d = 0, j = 0;
+    while (j < block.length) {
+      const ch = block[j];
+      if (ch === "{") { d++; j++; continue; }
+      if (ch === "}") { d--; j++; continue; }
+      if (d === 0) {
+        const km = block.slice(j).match(/^([a-z][a-zA-Z0-9]*)\s*:/);
+        if (km) { models.add(km[1]); j += km[0].length; continue; }
+      }
+      j++;
+    }
+  }
+  return [...models].sort();
+}
+
+function buildRoleEntry(roleName: string, models: string[]): string {
+  const pad = "    ";
+  const modelLines = models
+    .map(m => `${pad}    ${m}: {\n${pad}      read: true,\n${pad}    },`)
+    .join("\n");
+  return [
+    `${pad}"${roleName}": {`,
+    `${pad}  storageKey: "Role-${roleName}",`,
+    `${pad}  models: {`,
+    modelLines,
+    `${pad}  },`,
+    `${pad}},`,
+  ].join("\n");
+}
+
+function injectRole(content: string, roleName: string, models: string[]): string {
+  const rolesIdx = content.indexOf("roles: {");
+  if (rolesIdx === -1) throw new Error("Could not find roles: { in permissions file");
+  const open = content.indexOf("{", rolesIdx);
+  let depth = 0, i = open, closing = -1;
+  for (; i < content.length; i++) {
+    if (content[i] === "{") depth++;
+    else if (content[i] === "}") { depth--; if (depth === 0) { closing = i; break; } }
+  }
+  if (closing === -1) throw new Error("Could not find closing brace of roles");
+  const entry = buildRoleEntry(roleName, models);
+  return content.slice(0, closing) + entry + "\n  " + content.slice(closing);
+}
+
+function roleExistsInContent(content: string, roleName: string): boolean {
+  return content.includes(`"${roleName}"`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -162,36 +224,70 @@ export async function runSetup(): Promise<void> {
   const envInput = await prompt(rl, `  ${fmt.label("Environment")} ${c.dim}[production]${c.reset}: `);
   if (envInput.trim()) environment = envInput.trim();
 
-  // 4. Ensure a read-only role exists
+  // 4. Role setup
   console.log();
-  const roleFound = detectRole(syncPath);
+  const permFile = syncPath ? permissionsFilePath(syncPath) : null;
   let roleToUse = MCP_ROLE;
 
-  if (roleFound === true) {
-    console.log(fmt.success(`Role ${fmt.label(MCP_ROLE)} found in permissions.gadget.ts`));
-  } else {
-    if (roleFound === false) {
-      console.log(fmt.warn(`Role ${fmt.label(MCP_ROLE)} not found in permissions.gadget.ts`));
-    } else {
-      console.log(fmt.info("Could not auto-detect roles — you can create one or use an existing role."));
-    }
+  if (!permFile) {
+    // No local permissions file — fall back to manual instructions
+    console.log(fmt.info("No local permissions.gadget.ts found."));
+    console.log(fmt.info(`Create a read-only role manually at: ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`));
     console.log();
-    console.log(fmt.section("  Set up a read-only role"));
-    console.log();
-    console.log(`  Recommended: create a dedicated read-only role for the MCP server.`);
-    console.log();
-    console.log(`  1. Open:  ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`);
-    console.log(`     ${c.dim}(create in development first — it will deploy to production)${c.reset}`);
-    console.log();
-    console.log(`  2. Add a new role and grant ${c.bold}Read${c.reset} access to the models`);
-    console.log(`     you want the MCP server to query. Leave write access off.`);
-    console.log();
-
     const roleInput = await prompt(
       rl,
-      `  Role name ${c.dim}[${MCP_ROLE}]${c.reset} ${c.dim}(Enter to use default, or type an existing role name)${c.reset}: `
+      `  Role name ${c.dim}[${MCP_ROLE}]${c.reset} ${c.dim}(or type an existing role to use)${c.reset}: `
     );
     roleToUse = roleInput.trim() || MCP_ROLE;
+    console.log();
+  } else {
+    const permContent = readFileSync(permFile, "utf8");
+
+    if (roleExistsInContent(permContent, MCP_ROLE)) {
+      console.log(fmt.success(`Role ${fmt.label(MCP_ROLE)} already exists in permissions.gadget.ts`));
+    } else {
+      console.log(fmt.warn(`Role ${fmt.label(MCP_ROLE)} not found in permissions.gadget.ts`));
+      console.log();
+
+      const roleInput = await prompt(
+        rl,
+        `  Role name ${c.dim}[${MCP_ROLE}]${c.reset} ${c.dim}(Enter to create, or type an existing role name to skip)${c.reset}: `
+      );
+      roleToUse = roleInput.trim() || MCP_ROLE;
+
+      if (roleExistsInContent(permContent, roleToUse)) {
+        console.log();
+        console.log(fmt.success(`Using existing role ${fmt.label(roleToUse)}`));
+      } else {
+        // Auto-write the role into permissions.gadget.ts
+        const models = extractModels(permContent);
+        console.log();
+        console.log(fmt.info(`Found ${models.length} models: ${c.dim}${models.slice(0, 6).join(", ")}${models.length > 6 ? ` +${models.length - 6} more` : ""}${c.reset}`));
+
+        const confirmInput = await prompt(
+          rl,
+          `  Add role ${c.bold}${c.white}${roleToUse}${c.reset} with ${c.bold}read: true${c.reset} for all ${models.length} models? ${c.dim}[Y/n]${c.reset}: `
+        );
+
+        if (confirmInput.trim().toLowerCase() !== "n") {
+          try {
+            const updated = injectRole(permContent, roleToUse, models);
+            writeFileSync(permFile, updated, "utf8");
+            console.log();
+            console.log(fmt.success(`Written to ${permFile}`));
+            console.log(fmt.dim("           Deploy your Gadget app to apply the change, then create the API key."));
+            console.log(fmt.dim(`           Or open: ${permissionsUrl(appSlug, "development")} to verify.`));
+          } catch (err: any) {
+            console.log();
+            console.log(fmt.error(`Could not write file: ${err?.message ?? String(err)}`));
+            console.log(fmt.info(`Create the role manually at: ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`));
+          }
+        } else {
+          console.log();
+          console.log(fmt.info(`Skipped. Create the role manually at: ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`));
+        }
+      }
+    }
     console.log();
   }
 
