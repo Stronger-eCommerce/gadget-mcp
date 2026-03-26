@@ -147,23 +147,26 @@ function writeJsonMcpConfig(filePath: string, serverName: string, entry: McpEntr
   writeFileSync(filePath, JSON.stringify(existing, null, 2), "utf8");
 }
 
+type Scope = "global" | "project";
+
 interface Tool {
   label: string;
   key: string;
-  install: (serverName: string, entry: McpEntry, appSlug: string, environment: string, apiKey: string) => string | null;
+  install: (serverName: string, entry: McpEntry, appSlug: string, environment: string, apiKey: string, scope: Scope, projectRoot: string | null) => string | null;
 }
 
 const TOOLS: Tool[] = [
   {
     label: "Claude Code (CLI)",
     key: "claude-code",
-    install: (serverName, entry, appSlug, environment, apiKey) => {
+    install: (serverName, entry, appSlug, environment, apiKey, scope) => {
       const envFlags = [
         `-e GADGET_APP=${appSlug}`,
         ...(environment !== "production" ? [`-e GADGET_ENVIRONMENT=${environment}`] : []),
         `-e GADGET_API_KEY=${apiKey}`,
       ].join(" ");
-      const cmd = `claude mcp add ${serverName} ${envFlags} -- npx @stronger-ecommerce/gadget-mcp`;
+      const scopeFlag = scope === "project" ? " -s project" : "";
+      const cmd = `claude mcp add${scopeFlag} ${serverName} ${envFlags} -- npx @stronger-ecommerce/gadget-mcp`;
       try {
         execSync(cmd, { stdio: "pipe" });
         return null; // success
@@ -176,9 +179,12 @@ const TOOLS: Tool[] = [
   {
     label: "Cursor",
     key: "cursor",
-    install: (serverName, entry) => {
+    install: (serverName, entry, appSlug, environment, apiKey, scope, projectRoot) => {
       try {
-        writeJsonMcpConfig(join(homedir(), ".cursor", "mcp.json"), serverName, entry);
+        const configPath = scope === "project" && projectRoot
+          ? join(projectRoot, ".cursor", "mcp.json")
+          : join(homedir(), ".cursor", "mcp.json");
+        writeJsonMcpConfig(configPath, serverName, entry);
         return null;
       } catch (err: any) { return err?.message; }
     },
@@ -186,9 +192,12 @@ const TOOLS: Tool[] = [
   {
     label: "VS Code",
     key: "vscode",
-    install: (serverName, entry) => {
+    install: (serverName, entry, appSlug, environment, apiKey, scope, projectRoot) => {
       try {
-        writeJsonMcpConfig(join(homedir(), ".vscode", "mcp.json"), serverName, entry);
+        const configPath = scope === "project" && projectRoot
+          ? join(projectRoot, ".vscode", "mcp.json")
+          : join(homedir(), ".vscode", "mcp.json");
+        writeJsonMcpConfig(configPath, serverName, entry);
         return null;
       } catch (err: any) { return err?.message; }
     },
@@ -469,6 +478,23 @@ export async function runSetup(): Promise<void> {
 
   const selected = indices.map(i => TOOLS[i]);
 
+  // ── Scope selection ───────────────────────────────────────────────────────
+  const projectRoot = syncPath ? dirname(dirname(syncPath)) : null;
+  let scope: Scope = "global";
+
+  if (projectRoot) {
+    console.log();
+    console.log(fmt.info(`Project root detected: ${c.dim}${projectRoot}${c.reset}`));
+    const scopeInput = await prompt(
+      rl,
+      `  Install scope ${c.dim}[project/global, default: project]${c.reset}: `
+    );
+    scope = scopeInput.trim().toLowerCase() === "global" ? "global" : "project";
+  } else {
+    console.log();
+    console.log(fmt.info("No project root detected — installing globally."));
+  }
+
   rl.close();
 
   console.log();
@@ -476,7 +502,7 @@ export async function runSetup(): Promise<void> {
 
   for (const tool of selected) {
     process.stdout.write(`  Installing for ${c.bold}${tool.label}${c.reset}… `);
-    const err = tool.install(serverName, entry, appSlug, environment, trimmedKey);
+    const err = tool.install(serverName, entry, appSlug, environment, trimmedKey, scope, projectRoot);
     if (err === null) {
       console.log(`${c.green}✔${c.reset}`);
     } else {
