@@ -1,0 +1,35 @@
+{
+  "name": "@stronger-ecommerce/gadget-mcp",
+  "version": "1.0.0",
+  "description": "Generic read-only MCP server for any Gadget app",
+  "type": "module",
+  "bin": {
+    "gadget-mcp": "bin/gadget-mcp.js"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "gadget",
+    "mcp",
+    "model-context-protocol",
+    "shopify"
+  ],
+  "license": "MIT"
+}
