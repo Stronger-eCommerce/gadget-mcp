@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, writeFileSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, readdirSync } from "fs";
 import { createInterface } from "readline";
 import { join, dirname } from "path";
 import { homedir } from "os";
@@ -110,12 +110,27 @@ function permissionsFilePath(syncPath: string): string | null {
   }
 }
 
-// Extract all unique model names from every models: {} block in the file
-function extractModels(content: string): string[] {
+// Get all model names from api/models/ directory (most complete source of truth)
+// Falls back to parsing permissions.gadget.ts if the directory doesn't exist
+function extractModels(permFile: string): string[] {
+  try {
+    const projectRoot = dirname(dirname(permFile)); // up from accessControl/
+    const modelsDir = join(projectRoot, "api", "models");
+    if (existsSync(modelsDir)) {
+      return readdirSync(modelsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name)
+        .sort();
+    }
+  } catch {
+    // fall through to permissions-based extraction
+  }
+
+  // Fallback: parse model names already referenced in permissions.gadget.ts
+  const content = readFileSync(permFile, "utf8");
   const models = new Set<string>();
   const modelsBlockRe = /models:\s*\{/g;
   let m: RegExpExecArray | null;
-
   while ((m = modelsBlockRe.exec(content)) !== null) {
     const open = content.indexOf("{", m.index);
     let depth = 0, i = open, close = open;
@@ -124,8 +139,6 @@ function extractModels(content: string): string[] {
       else if (content[i] === "}") { depth--; if (depth === 0) { close = i; break; } }
     }
     const block = content.slice(open + 1, close);
-
-    // Collect top-level keys (depth 0 inside the block)
     let d = 0, j = 0;
     while (j < block.length) {
       const ch = block[j];
@@ -260,7 +273,7 @@ export async function runSetup(): Promise<void> {
         console.log(fmt.success(`Using existing role ${fmt.label(roleToUse)}`));
       } else {
         // Auto-write the role into permissions.gadget.ts
-        const models = extractModels(permContent);
+        const models = extractModels(permFile);
         console.log();
         console.log(fmt.info(`Found ${models.length} models: ${c.dim}${models.slice(0, 6).join(", ")}${models.length > 6 ? ` +${models.length - 6} more` : ""}${c.reset}`));
 
