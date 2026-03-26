@@ -25,6 +25,13 @@ export async function gql(query: string, variables?: Record<string, unknown>): P
 
   const json = await res.json() as any;
   if (json.errors?.length) {
+    const permissionError = json.errors.find((e: any) => e.extensions?.code === "GGT_PERMISSION_DENIED");
+    if (permissionError) {
+      throw new Error(
+        `Permission denied (GGT_PERMISSION_DENIED): your API key has no role assigned, or the role lacks read access to this model.\n` +
+        `Fix: go to ${GADGET_APP}.gadget.app/edit/${GADGET_ENVIRONMENT}/settings/api-keys and assign a role with read permissions to your key.`
+      );
+    }
     throw new Error(json.errors.map((e: any) => e.message).join("; "));
   }
   return json.data;
