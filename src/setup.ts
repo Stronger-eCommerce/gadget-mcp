@@ -1,8 +1,9 @@
-import { readFileSync, existsSync, writeFileSync, readdirSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, readdirSync, mkdirSync } from "fs";
 import { createInterface } from "readline";
 import { join, dirname } from "path";
 import { homedir } from "os";
 import { createRequire } from "module";
+import { execSync } from "child_process";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 const c = {
@@ -110,6 +111,99 @@ async function testConnection(app: string, env: string, apiKey: string): Promise
     return { ok: false, error: err?.message ?? String(err) };
   }
 }
+
+// ── Tool installers ───────────────────────────────────────────────────────────
+interface McpEntry {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+function mcpEntry(appSlug: string, apiKey: string, environment: string): McpEntry {
+  return {
+    command: "npx",
+    args: ["@stronger-ecommerce/gadget-mcp"],
+    env: {
+      GADGET_APP: appSlug,
+      GADGET_API_KEY: apiKey,
+      ...(environment !== "production" ? { GADGET_ENVIRONMENT: environment } : {}),
+    },
+  };
+}
+
+function writeJsonMcpConfig(filePath: string, serverName: string, entry: McpEntry): void {
+  let existing: Record<string, any> = { mcpServers: {} };
+  if (existsSync(filePath)) {
+    try {
+      existing = JSON.parse(readFileSync(filePath, "utf8"));
+      existing.mcpServers = existing.mcpServers ?? {};
+    } catch {
+      existing = { mcpServers: {} };
+    }
+  } else {
+    mkdirSync(dirname(filePath), { recursive: true });
+  }
+  existing.mcpServers[serverName] = entry;
+  writeFileSync(filePath, JSON.stringify(existing, null, 2), "utf8");
+}
+
+interface Tool {
+  label: string;
+  key: string;
+  install: (serverName: string, entry: McpEntry, appSlug: string, environment: string, apiKey: string) => string | null;
+}
+
+const TOOLS: Tool[] = [
+  {
+    label: "Claude Code (CLI)",
+    key: "claude-code",
+    install: (serverName, entry, appSlug, environment, apiKey) => {
+      const envFlags = [
+        `-e GADGET_APP=${appSlug}`,
+        ...(environment !== "production" ? [`-e GADGET_ENVIRONMENT=${environment}`] : []),
+        `-e GADGET_API_KEY=${apiKey}`,
+      ].join(" ");
+      const cmd = `claude mcp add ${serverName} ${envFlags} -- npx @stronger-ecommerce/gadget-mcp`;
+      try {
+        execSync(cmd, { stdio: "pipe" });
+        return null; // success
+      } catch (err: any) {
+        const msg = err?.stderr?.toString()?.trim() || err?.message;
+        return msg || "unknown error";
+      }
+    },
+  },
+  {
+    label: "Cursor",
+    key: "cursor",
+    install: (serverName, entry) => {
+      try {
+        writeJsonMcpConfig(join(homedir(), ".cursor", "mcp.json"), serverName, entry);
+        return null;
+      } catch (err: any) { return err?.message; }
+    },
+  },
+  {
+    label: "VS Code",
+    key: "vscode",
+    install: (serverName, entry) => {
+      try {
+        writeJsonMcpConfig(join(homedir(), ".vscode", "mcp.json"), serverName, entry);
+        return null;
+      } catch (err: any) { return err?.message; }
+    },
+  },
+  {
+    label: "Windsurf",
+    key: "windsurf",
+    install: (serverName, entry) => {
+      try {
+        writeJsonMcpConfig(join(homedir(), ".codeium", "windsurf", "mcp_config.json"), serverName, entry);
+        return null;
+      } catch (err: any) { return err?.message; }
+    },
+  },
+];
 
 function apiKeysUrl(app: string, env: string): string {
   return `https://${app}.gadget.app/edit/${env}/settings/api-keys`;
@@ -354,67 +448,43 @@ export async function runSetup(): Promise<void> {
   const nameInput = await prompt(rl, `  ${fmt.label("MCP server name")} ${c.dim}[${defaultName}]${c.reset}: `);
   const serverName = nameInput.trim() || defaultName;
 
-  rl.close();
-
   // ── Results ────────────────────────────────────────────────────────────────
   console.log();
-  console.log(fmt.success(`Setup complete for ${fmt.label(appSlug)} ${c.dim}(key: ${mask(trimmedKey)})${c.reset}`));
+  console.log(fmt.success(`Connected key for ${fmt.label(appSlug)} ${c.dim}(${mask(trimmedKey)})${c.reset}`));
   console.log();
 
-  const npxCmd = `npx @stronger-ecommerce/gadget-mcp`;
-
-  // Claude Code
-  console.log(fmt.section("  Claude Code"));
+  // ── Tool selection ────────────────────────────────────────────────────────
+  console.log(fmt.section("  Install MCP server"));
   console.log();
-  console.log(`  Run this command:\n`);
-  const claudeCmd =
-    `  claude mcp add ${serverName} \\\n` +
-    `    -e GADGET_APP=${appSlug} \\\n` +
-    (environment !== "production" ? `    -e GADGET_ENVIRONMENT=${environment} \\\n` : "") +
-    `    -e GADGET_API_KEY=${trimmedKey} \\\n` +
-    `    -- ${npxCmd}`;
-  console.log(fmt.code(claudeCmd));
+  TOOLS.forEach((t, i) => console.log(`  ${c.bold}${i + 1}.${c.reset} ${t.label}`));
   console.log();
+  const selInput = await prompt(
+    rl,
+    `  Which tools to configure? ${c.dim}[1-${TOOLS.length}, comma-separated, or Enter for all]${c.reset}: `
+  );
 
-  // Cursor
-  console.log(fmt.section("  Cursor  (~/.cursor/mcp.json)"));
+  const indices: number[] = selInput.trim()
+    ? selInput.split(",").map(s => parseInt(s.trim(), 10) - 1).filter(i => i >= 0 && i < TOOLS.length)
+    : TOOLS.map((_, i) => i);
 
-  const cursorConfig = join(homedir(), ".cursor", "mcp.json");
+  const selected = indices.map(i => TOOLS[i]);
 
-  let existing: Record<string, any> = { mcpServers: {} };
-  if (existsSync(cursorConfig)) {
-    try {
-      existing = JSON.parse(readFileSync(cursorConfig, "utf8"));
-      existing.mcpServers = existing.mcpServers ?? {};
-    } catch {
-      existing = { mcpServers: {} };
+  rl.close();
+
+  console.log();
+  const entry = mcpEntry(appSlug, trimmedKey, environment);
+
+  for (const tool of selected) {
+    process.stdout.write(`  Installing for ${c.bold}${tool.label}${c.reset}… `);
+    const err = tool.install(serverName, entry, appSlug, environment, trimmedKey);
+    if (err === null) {
+      console.log(`${c.green}✔${c.reset}`);
+    } else {
+      console.log(`${c.red}✖${c.reset}  ${c.dim}${err}${c.reset}`);
     }
   }
-
-  existing.mcpServers[serverName] = {
-    command: "npx",
-    args: ["@stronger-ecommerce/gadget-mcp"],
-    env: {
-      GADGET_APP: appSlug,
-      GADGET_API_KEY: trimmedKey,
-      ...(environment !== "production" ? { GADGET_ENVIRONMENT: environment } : {}),
-    },
-  };
-
-  const configJson = JSON.stringify(existing, null, 2);
-
   console.log();
-  if (existsSync(cursorConfig)) {
-    console.log(fmt.info(`Updating existing ${cursorConfig}`));
-  } else {
-    console.log(fmt.info(`Creating ${cursorConfig}`));
-  }
-  console.log(fmt.dim(configJson.split("\n").map(l => "  " + l).join("\n")));
-  console.log();
-
-  writeFileSync(cursorConfig, configJson, "utf8");
-  console.log(fmt.success(`Written to ${cursorConfig}`));
-  console.log(fmt.dim("           Restart Cursor to pick up the new MCP server."));
+  console.log(fmt.dim("  Restart your editor(s) to pick up the new MCP server."));
   console.log();
 
   // ── Connection test ───────────────────────────────────────────────────────
