@@ -94,6 +94,24 @@ function apiKeysUrl(app: string, env: string): string {
   return `https://${app}.gadget.app/edit/${env}/settings/api-keys`;
 }
 
+function permissionsUrl(app: string, env: string): string {
+  return `https://${app}.gadget.app/edit/${env}/settings/permissions`;
+}
+
+const MCP_ROLE = "gadget-mcp-read";
+
+function detectRole(syncPath: string | null): boolean | null {
+  if (!syncPath) return null; // can't check — no project root
+  try {
+    const projectRoot = dirname(dirname(syncPath)); // up from .gadget/
+    const permFile = join(projectRoot, "accessControl", "permissions.gadget.ts");
+    if (!existsSync(permFile)) return null;
+    return readFileSync(permFile, "utf8").includes(`"${MCP_ROLE}"`);
+  } catch {
+    return null;
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 export async function runSetup(): Promise<void> {
   await checkForUpdate();
@@ -144,10 +162,40 @@ export async function runSetup(): Promise<void> {
   const envInput = await prompt(rl, `  ${fmt.label("Environment")} ${c.dim}[production]${c.reset}: `);
   if (envInput.trim()) environment = envInput.trim();
 
-  // 4. API key
+  // 4. Ensure gadget-mcp-read role exists
   console.log();
-  console.log(fmt.info(`Get your API key at: ${c.cyan}${apiKeysUrl(appSlug, environment)}${c.reset}`));
-  const apiKey = await prompt(rl, `  ${fmt.label("API key")}: `);
+  const roleFound = detectRole(syncPath);
+  if (roleFound === true) {
+    console.log(fmt.success(`Role ${fmt.label(MCP_ROLE)} found in permissions.gadget.ts`));
+  } else {
+    if (roleFound === false) {
+      console.log(fmt.warn(`Role ${fmt.label(MCP_ROLE)} not found in permissions.gadget.ts`));
+    } else {
+      console.log(fmt.info(`Could not auto-detect role — checking manually is recommended.`));
+    }
+    console.log();
+    console.log(fmt.section("  Create the read-only role"));
+    console.log();
+    console.log(`  1. Open:  ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`);
+    console.log(`     ${c.dim}(create the role in development first, then it deploys to production)${c.reset}`);
+    console.log();
+    console.log(`  2. Add a new role named: ${c.bold}${c.white}${MCP_ROLE}${c.reset}`);
+    console.log();
+    console.log(`  3. Grant ${c.bold}Read${c.reset} access to every model you want the MCP server`);
+    console.log(`     to query. Leave write access off.`);
+    console.log();
+    await prompt(rl, `  Press ${c.bold}Enter${c.reset} once the role is created and deployed… `);
+    console.log();
+  }
+
+  // 5. API key
+  console.log();
+  console.log(fmt.section("  Create the API key"));
+  console.log();
+  console.log(`  1. Open:  ${c.cyan}${apiKeysUrl(appSlug, environment)}${c.reset}`);
+  console.log(`  2. Create a new key and assign the ${c.bold}${c.white}${MCP_ROLE}${c.reset} role to it.`);
+  console.log();
+  const apiKey = await prompt(rl, `  ${fmt.label("Paste API key")}: `);
   if (!apiKey.trim()) {
     console.log("\n" + fmt.error("API key is required."));
     rl.close();
