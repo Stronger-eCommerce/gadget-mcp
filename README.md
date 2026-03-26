@@ -114,6 +114,26 @@ Once connected, ask Claude:
 
 ---
 
+## Contributing
+
+Bug reports and pull requests are welcome!
+
+- **Found a bug?** [Open an issue](https://github.com/Stronger-eCommerce/gadget-mcp/issues)
+- **Have a fix or feature?** Fork the repo, make your changes, and open a PR against `main`
+- For significant changes, open an issue first so we can align on the approach
+
+### Running locally
+
+```bash
+git clone https://github.com/Stronger-eCommerce/gadget-mcp
+cd gadget-mcp
+npm install
+npm run build
+npm test
+```
+
+---
+
 ## About
 
 Made with ♥ by [Stronger eCommerce](https://strongerecommerce.com) — Shopify development and eCommerce operations.
