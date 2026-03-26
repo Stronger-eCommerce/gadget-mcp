@@ -9,7 +9,7 @@ process.env.GADGET_APP = "test-app";
 process.env.GADGET_API_KEY = "test-key-1234";
 
 // Dynamically import so env vars are set first
-const { gql, handleTool } = await import("../tools.js");
+const { gql, handleTool, _resetCaches } = await import("../tools.js");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function mockGql(data: unknown) {
@@ -28,6 +28,7 @@ function mockGqlError(message: string) {
 
 beforeEach(() => {
   mockFetch.mockReset();
+  _resetCaches();
 });
 
 // ── gql helper ────────────────────────────────────────────────────────────────
@@ -101,10 +102,34 @@ describe("introspect_model", () => {
 });
 
 // ── query_records ─────────────────────────────────────────────────────────────
+
+// Introspection response that resolves "shopifyOrder" → "shopifyOrders" connection
+const shopifyOrderIntrospection = {
+  __schema: {
+    queryType: {
+      fields: [
+        {
+          name: "shopifyOrders",
+          args: [
+            {
+              name: "filter",
+              type: { kind: "LIST", name: null, ofType: { kind: "NON_NULL", name: null, ofType: { kind: "INPUT_OBJECT", name: "ShopifyOrderFilter", ofType: null } } },
+            },
+          ],
+          type: { kind: "NON_NULL", name: null, ofType: { kind: "OBJECT", name: "ShopifyOrderConnection", ofType: null } },
+        },
+      ],
+    },
+  },
+};
+
 describe("query_records", () => {
   it("returns records array", async () => {
+    // Call 1: introspection (resolveListField)
+    mockGql(shopifyOrderIntrospection);
+    // Call 2: actual records query
     mockGql({
-      shopifyOrder: {
+      shopifyOrders: {
         edges: [
           { node: { id: "1", name: "#1001" } },
           { node: { id: "2", name: "#1002" } },
@@ -120,12 +145,21 @@ describe("query_records", () => {
   });
 
   it("caps limit at 50", async () => {
-    mockGql({
-      shopifyOrder: { edges: [], pageInfo: { hasNextPage: false } },
-    });
+    // Call 1: introspection
+    mockGql(shopifyOrderIntrospection);
+    // Call 2: actual records query
+    mockGql({ shopifyOrders: { edges: [], pageInfo: { hasNextPage: false } } });
     await handleTool("query_records", { model: "shopifyOrder", fields: "id", limit: 999 });
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    // calls[0] = introspection, calls[1] = records query
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
     expect(body.variables.first).toBe(50);
+  });
+
+  it("returns error when model has no connection field", async () => {
+    mockGql({ __schema: { queryType: { fields: [] } } });
+    const result = await handleTool("query_records", { model: "unknownModel", fields: "id" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("No connection field found");
   });
 });
 

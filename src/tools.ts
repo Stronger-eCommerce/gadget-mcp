@@ -30,6 +30,80 @@ export async function gql(query: string, variables?: Record<string, unknown>): P
   return json.data;
 }
 
+// ── Query field resolver (introspection cache) ────────────────────────────────
+interface ResolvedListField {
+  fieldName: string;       // e.g. "labels", "shopifyOrders"
+  filterArgType?: string;  // full type string, e.g. "[LabelFilter!]"
+}
+
+let queryFieldsCache: any[] | null = null;
+const listFieldCache = new Map<string, ResolvedListField | null>();
+
+/** Reset introspection caches — exposed for unit tests only */
+export function _resetCaches() {
+  queryFieldsCache = null;
+  listFieldCache.clear();
+}
+
+// Reconstruct a type string from a GraphQL __type fragment (handles NON_NULL / LIST nesting)
+function typeString(t: any): string {
+  if (!t) return "String";
+  if (t.kind === "NON_NULL") return `${typeString(t.ofType)}!`;
+  if (t.kind === "LIST")     return `[${typeString(t.ofType)}]`;
+  return t.name ?? "String";
+}
+
+async function resolveListField(model: string): Promise<ResolvedListField | null> {
+  const cached = listFieldCache.get(model);
+  if (cached !== undefined) return cached;
+
+  if (!queryFieldsCache) {
+    const data = await gql(`
+      query {
+        __schema {
+          queryType {
+            fields {
+              name
+              args {
+                name
+                type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+              }
+              type {
+                kind name
+                ofType { kind name ofType { kind name } }
+              }
+            }
+          }
+        }
+      }
+    `);
+    queryFieldsCache = data.__schema.queryType.fields;
+  }
+
+  const modelType = model.charAt(0).toUpperCase() + model.slice(1);
+
+  // Find the query field whose return type is <ModelType>Connection
+  const field = queryFieldsCache!.find((f: any) => {
+    let t = f.type;
+    // Unwrap NON_NULL
+    if (t?.kind === "NON_NULL") t = t.ofType;
+    return t?.name === `${modelType}Connection`;
+  });
+
+  if (!field) {
+    listFieldCache.set(model, null);
+    return null;
+  }
+
+  // Find the filter argument and reconstruct its full type string
+  const filterArg = field.args?.find((a: any) => a.name === "filter");
+  const filterArgType = filterArg ? typeString(filterArg.type) : undefined;
+
+  const result: ResolvedListField = { fieldName: field.name, filterArgType };
+  listFieldCache.set(model, result);
+  return result;
+}
+
 // ── Tool handler ──────────────────────────────────────────────────────────────
 export async function handleTool(name: string, args: Record<string, any>): Promise<{
   content: { type: string; text: string }[];
@@ -89,18 +163,31 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         const { model, fields, filter, limit = 10 } = args as {
           model: string;
           fields: string;
-          filter?: Record<string, unknown>;
+          filter?: unknown;
           limit?: number;
         };
         const first = Math.min(limit, 50);
-        const filterArg = filter ? `, filter: $filter` : "";
-        const varsDef = filter ? `($filter: ${model.charAt(0).toUpperCase() + model.slice(1)}Filter, $first: Int)` : `($first: Int)`;
+
+        // Resolve the real connection field name and filter type via introspection
+        const resolved = await resolveListField(model);
+        if (!resolved) {
+          return {
+            content: [{ type: "text", text: `No connection field found for model "${model}". Use list_models to browse available models.` }],
+            isError: true,
+          };
+        }
+
+        const { fieldName, filterArgType } = resolved;
+        const filterClause = filter ? `, filter: $filter` : "";
+        const varsDef = filter && filterArgType
+          ? `($first: Int, $filter: ${filterArgType})`
+          : `($first: Int)`;
         const varsVal: Record<string, unknown> = { first };
         if (filter) varsVal.filter = filter;
 
         const query = `
           query QueryRecords${varsDef} {
-            ${model}(first: $first${filterArg}) {
+            ${fieldName}(first: $first${filterClause}) {
               edges {
                 node {
                   ${fields}
@@ -112,7 +199,7 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         `;
 
         const data = await gql(query, varsVal);
-        const connection = data[model];
+        const connection = data[fieldName];
         const records = connection.edges.map((e: any) => e.node);
         return {
           content: [{
@@ -184,19 +271,18 @@ export const TOOL_DEFINITIONS = [
   {
     name: "query_records",
     description:
-      "Query records from any Gadget model. Specify the model name and a GraphQL field selection. Use introspect_model first to discover available fields.",
+      "Query records from any Gadget model. Specify the model name (singular camelCase) and a GraphQL field selection. Use introspect_model first to discover available fields.",
     inputSchema: {
       type: "object",
       required: ["model", "fields"],
       properties: {
-        model: { type: "string", description: "Model name in camelCase, e.g. shopifyOrder, label" },
+        model: { type: "string", description: "Model name in singular camelCase, e.g. shopifyOrder, label" },
         fields: {
           type: "string",
           description: "GraphQL field selection, e.g. \"id name email createdAt\"",
         },
         filter: {
-          type: "object",
-          description: "Gadget filter object, e.g. { \"name\": { \"equals\": \"#59389\" } }",
+          description: "Filter value — shape depends on the model's schema (object or array of filter objects). Use run_graphql for complex filters.",
         },
         limit: { type: "number", description: "Max records to return (default 10, max 50)" },
       },
