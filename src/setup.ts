@@ -288,8 +288,18 @@ export async function runSetup(): Promise<void> {
             writeFileSync(permFile, updated, "utf8");
             console.log();
             console.log(fmt.success(`Written to ${permFile}`));
-            console.log(fmt.dim("           Deploy your Gadget app to apply the change, then create the API key."));
-            console.log(fmt.dim(`           Or open: ${permissionsUrl(appSlug, "development")} to verify.`));
+            console.log();
+            console.log(fmt.section("  ⚠  Deploy before continuing"));
+            console.log();
+            console.log(`  The role was added to your local file but is ${c.bold}not live yet${c.reset}.`);
+            console.log(`  You must deploy to ${c.bold}development${c.reset} before creating an API key:`);
+            console.log();
+            console.log(fmt.code(`    ggt push`));
+            console.log();
+            console.log(`  Then verify the role appeared at:`);
+            console.log(`  ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`);
+            console.log();
+            await prompt(rl, `  Press ${c.bold}Enter${c.reset} once deployed and ready to create the API key… `);
           } catch (err: any) {
             console.log();
             console.log(fmt.error(`Could not write file: ${err?.message ?? String(err)}`));
