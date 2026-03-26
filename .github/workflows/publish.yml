@@ -20,6 +20,7 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
+      - run: npm test
       - name: Bump patch version and publish
         run: |
           git config user.name "github-actions[bot]"
