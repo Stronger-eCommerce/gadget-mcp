@@ -1,16 +1,18 @@
 name: Publish
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -18,8 +20,12 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
-      - name: Set version from release tag
-        run: npm version --no-git-tag-version "${GITHUB_REF_NAME#v}"
-      - run: npm publish --access public
+      - name: Bump patch version and publish
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version patch -m "chore: release %s [skip ci]"
+          git push
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
