@@ -1,4 +1,6 @@
 src/
+dist/test/
 tsconfig.json
 node_modules/
+*.tgz
 *.log
