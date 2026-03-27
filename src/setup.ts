@@ -34,7 +34,7 @@ const fmt = {
   },
 };
 
-// ── Version check ─────────────────────────────────────────────────────────────
+// ── Version ───────────────────────────────────────────────────────────────────
 const PKG_NAME = "@stronger-ecommerce/gadget-mcp";
 
 function currentVersion(): string {
@@ -169,7 +169,7 @@ const TOOLS: Tool[] = [
       const cmd = `claude mcp add${scopeFlag} ${serverName} ${envFlags} -- npx @stronger-ecommerce/gadget-mcp`;
       try {
         execSync(cmd, { stdio: "pipe" });
-        return null; // success
+        return null;
       } catch (err: any) {
         const msg = err?.stderr?.toString()?.trim() || err?.message;
         return msg || "unknown error";
@@ -214,6 +214,59 @@ const TOOLS: Tool[] = [
   },
 ];
 
+// ── Config scanner (used by list / uninstall) ─────────────────────────────────
+interface FoundEntry {
+  configPath: string;
+  source: string;
+  name: string;
+  app: string;
+  environment: string;
+  keyPreview: string;
+  isClaudeUserLevel: boolean;
+}
+
+function scanConfigForGadget(filePath: string, sourceLabel: string, isClaudeUserLevel = false): FoundEntry[] {
+  if (!existsSync(filePath)) return [];
+  try {
+    const config = JSON.parse(readFileSync(filePath, "utf8"));
+    const servers: Record<string, any> = config.mcpServers ?? {};
+    return Object.entries(servers)
+      .filter(([, entry]: [string, any]) => (entry.args ?? []).some((a: string) => a.includes("gadget-mcp")))
+      .map(([name, entry]: [string, any]) => ({
+        configPath: filePath,
+        source: sourceLabel,
+        name,
+        app: entry.env?.GADGET_APP ?? "?",
+        environment: entry.env?.GADGET_ENVIRONMENT ?? "production",
+        keyPreview: entry.env?.GADGET_API_KEY ? mask(entry.env.GADGET_API_KEY) : `${c.yellow}(no key)${c.reset}`,
+        isClaudeUserLevel,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function allConfigSources(projectRoot: string | null): Array<{ path: string; label: string; isClaudeUserLevel?: boolean }> {
+  return [
+    { path: join(homedir(), ".cursor", "mcp.json"),                        label: "Cursor (global)" },
+    { path: join(homedir(), ".vscode", "mcp.json"),                        label: "VS Code (global)" },
+    { path: join(homedir(), ".codeium", "windsurf", "mcp_config.json"),    label: "Windsurf (global)" },
+    { path: join(homedir(), ".claude", "settings.json"),                   label: "Claude Code (user)", isClaudeUserLevel: true },
+    ...(projectRoot ? [
+      { path: join(projectRoot, ".cursor", "mcp.json"),  label: "Cursor (project)" },
+      { path: join(projectRoot, ".vscode", "mcp.json"),  label: "VS Code (project)" },
+      { path: join(projectRoot, ".mcp.json"),            label: "Claude Code (project)" },
+    ] : []),
+  ];
+}
+
+function removeFromJsonConfig(filePath: string, serverName: string): void {
+  const config = JSON.parse(readFileSync(filePath, "utf8"));
+  delete config.mcpServers[serverName];
+  writeFileSync(filePath, JSON.stringify(config, null, 2), "utf8");
+}
+
+// ── URL helpers ───────────────────────────────────────────────────────────────
 function apiKeysUrl(app: string, env: string): string {
   return `https://${app}.gadget.app/edit/${env}/settings/api-keys`;
 }
@@ -222,6 +275,7 @@ function permissionsUrl(app: string, env: string): string {
   return `https://${app}.gadget.app/edit/${env}/settings/permissions`;
 }
 
+// ── Permissions file helpers ───────────────────────────────────────────────────
 const MCP_ROLE = "gadget-mcp-read";
 
 function permissionsFilePath(syncPath: string): string | null {
@@ -234,11 +288,9 @@ function permissionsFilePath(syncPath: string): string | null {
   }
 }
 
-// Get all model names from api/models/ directory (most complete source of truth)
-// Falls back to parsing permissions.gadget.ts if the directory doesn't exist
 function extractModels(permFile: string): string[] {
   try {
-    const projectRoot = dirname(dirname(permFile)); // up from accessControl/
+    const projectRoot = dirname(dirname(permFile));
     const modelsDir = join(projectRoot, "api", "models");
     if (existsSync(modelsDir)) {
       return readdirSync(modelsDir, { withFileTypes: true })
@@ -250,7 +302,6 @@ function extractModels(permFile: string): string[] {
     // fall through to permissions-based extraction
   }
 
-  // Fallback: parse model names already referenced in permissions.gadget.ts
   const content = readFileSync(permFile, "utf8");
   const models = new Set<string>();
   const modelsBlockRe = /models:\s*\{/g;
@@ -311,7 +362,16 @@ function roleExistsInContent(content: string, roleName: string): boolean {
   return content.includes(`"${roleName}"`);
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+// ── Connection test tips ───────────────────────────────────────────────────────
+function printConnectionTips(appSlug: string, environment: string, roleName: string): void {
+  console.log(`  Things to check:`);
+  console.log(`  ${c.dim}·${c.reset} Did you assign a role to the API key? ${c.cyan}${apiKeysUrl(appSlug, environment)}${c.reset}`);
+  console.log(`  ${c.dim}·${c.reset} Did you deploy the role? ${c.cyan}ggt push${c.reset}`);
+  console.log(`  ${c.dim}·${c.reset} Does the API key have the ${c.bold}${roleName}${c.reset} role assigned?`);
+  console.log(`  ${c.dim}·${c.reset} Is the app slug correct? ${c.dim}(${appSlug})${c.reset}`);
+}
+
+// ── Main setup ────────────────────────────────────────────────────────────────
 export async function runSetup(): Promise<void> {
   await checkForUpdate();
 
@@ -367,7 +427,6 @@ export async function runSetup(): Promise<void> {
   let roleToUse = MCP_ROLE;
 
   if (!permFile) {
-    // No local permissions file — fall back to manual instructions
     console.log(fmt.info("No local permissions.gadget.ts found."));
     console.log(fmt.info(`Create a read-only role manually at: ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`));
     console.log();
@@ -396,7 +455,6 @@ export async function runSetup(): Promise<void> {
         console.log();
         console.log(fmt.success(`Using existing role ${fmt.label(roleToUse)}`));
       } else {
-        // Auto-write the role into permissions.gadget.ts
         const models = extractModels(permFile);
         console.log();
         console.log(fmt.info(`Found ${models.length} models: ${c.dim}${models.slice(0, 6).join(", ")}${models.length > 6 ? ` +${models.length - 6} more` : ""}${c.reset}`));
@@ -444,25 +502,29 @@ export async function runSetup(): Promise<void> {
   console.log(`  1. Open:  ${c.cyan}${apiKeysUrl(appSlug, environment)}${c.reset}`);
   console.log(`  2. Create a new key and assign the ${c.bold}${c.white}${roleToUse}${c.reset} role to it.`);
   console.log();
-  const apiKey = await prompt(rl, `  ${fmt.label("Paste API key")}: `);
-  if (!apiKey.trim()) {
-    console.log("\n" + fmt.error("API key is required."));
-    rl.close();
-    process.exit(1);
-  }
-  const trimmedKey = apiKey.trim();
 
-  // 5. Server name
+  let trimmedKey = "";
+  while (true) {
+    const apiKey = await prompt(rl, `  ${fmt.label("Paste API key")}: `);
+    trimmedKey = apiKey.trim();
+    if (!trimmedKey) {
+      console.log("\n" + fmt.error("API key is required."));
+      rl.close();
+      process.exit(1);
+    }
+    if (!trimmedKey.startsWith("gsk-")) {
+      console.log(fmt.warn(`Key doesn't look like a Gadget API key (expected to start with ${c.bold}gsk-${c.reset}). Continuing anyway.`));
+    }
+    break;
+  }
+
+  // 6. Server name
   const defaultName = `${appSlug}-gadget`;
   const nameInput = await prompt(rl, `  ${fmt.label("MCP server name")} ${c.dim}[${defaultName}]${c.reset}: `);
   const serverName = nameInput.trim() || defaultName;
 
-  // ── Results ────────────────────────────────────────────────────────────────
+  // 7. Tool selection
   console.log();
-  console.log(fmt.success(`Connected key for ${fmt.label(appSlug)} ${c.dim}(${mask(trimmedKey)})${c.reset}`));
-  console.log();
-
-  // ── Tool selection ────────────────────────────────────────────────────────
   console.log(fmt.section("  Install MCP server"));
   console.log();
   TOOLS.forEach((t, i) => console.log(`  ${c.bold}${i + 1}.${c.reset} ${t.label}`));
@@ -478,7 +540,7 @@ export async function runSetup(): Promise<void> {
 
   const selected = indices.map(i => TOOLS[i]);
 
-  // ── Scope selection ───────────────────────────────────────────────────────
+  // 8. Scope selection
   const projectRoot = syncPath ? dirname(dirname(syncPath)) : null;
   let scope: Scope = "global";
 
@@ -495,8 +557,45 @@ export async function runSetup(): Promise<void> {
     console.log(fmt.info("No project root detected — installing globally."));
   }
 
+  // 9. Connection test (before writing configs, with retry)
+  console.log();
+  console.log(fmt.section("  Testing connection"));
+  console.log();
+
+  let connected = false;
+  while (true) {
+    process.stdout.write(`  Connecting to ${c.cyan}${appSlug}.gadget.app${c.reset}… `);
+    const test = await testConnection(appSlug, environment, trimmedKey);
+    if (test.ok) {
+      console.log(`${c.green}✔${c.reset}`);
+      console.log();
+      console.log(fmt.success(`Connected! Found ${c.bold}${test.models}${c.reset} queryable fields.`));
+      connected = true;
+      break;
+    }
+
+    console.log(`${c.red}✖${c.reset}`);
+    console.log();
+    console.log(fmt.error(`Connection failed: ${test.error}`));
+    console.log();
+    printConnectionTips(appSlug, environment, roleToUse);
+    console.log();
+
+    const retryInput = await prompt(rl, `  Try a different API key? ${c.dim}[Y/n]${c.reset}: `);
+    if (retryInput.trim().toLowerCase() === "n") break;
+    const newKey = await prompt(rl, `  ${fmt.label("Paste new API key")}: `);
+    if (newKey.trim()) trimmedKey = newKey.trim();
+    console.log();
+  }
+
   rl.close();
 
+  if (!connected) {
+    console.log();
+    console.log(fmt.warn("Proceeding with install despite failed connection test."));
+  }
+
+  // 10. Install
   console.log();
   const entry = mcpEntry(appSlug, trimmedKey, environment);
 
@@ -512,27 +611,221 @@ export async function runSetup(): Promise<void> {
   console.log();
   console.log(fmt.dim("  Restart your editor(s) to pick up the new MCP server."));
   console.log();
+}
 
-  // ── Connection test ───────────────────────────────────────────────────────
-  console.log(fmt.section("  Testing connection"));
+// ── Help ──────────────────────────────────────────────────────────────────────
+export function runHelp(): void {
+  const w = 60;
   console.log();
-  process.stdout.write(`  Connecting to ${c.cyan}${appSlug}.gadget.app${c.reset}… `);
-  const test = await testConnection(appSlug, environment, trimmedKey);
+  console.log(fmt.header("  ◆ Gadget MCP"));
+  console.log(fmt.dim("  Generic read-only MCP server for any Gadget app"));
+  console.log(fmt.dim("  by Stronger eCommerce · strongerecommerce.com"));
+  console.log();
+  console.log(fmt.section("  Commands", w));
+  console.log();
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp setup")}      Interactive setup wizard`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp verify")}     Test a connection without full setup`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp list")}       List all configured Gadget MCP servers`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp uninstall")}  Remove a configured Gadget MCP server`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --version")}  Show installed version`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --help")}     Show this help`);
+  console.log();
+  console.log(fmt.section("  Environment variables (MCP server mode)", w));
+  console.log();
+  console.log(`  ${fmt.label("GADGET_APP")}          ${c.dim}Required. App slug, e.g. "my-app"${c.reset}`);
+  console.log(`  ${fmt.label("GADGET_API_KEY")}      ${c.dim}Required. API key from <app>.gadget.app/edit/settings/api-keys${c.reset}`);
+  console.log(`  ${fmt.label("GADGET_ENVIRONMENT")}  ${c.dim}Optional. "production" (default) | "development"${c.reset}`);
+  console.log();
+  console.log(fmt.section("  Quick start", w));
+  console.log();
+  console.log(`  ${c.dim}1.${c.reset} Run setup from inside your Gadget project directory:`);
+  console.log(`     ${fmt.code("npx @stronger-ecommerce/gadget-mcp setup")}`);
+  console.log();
+  console.log(`  ${c.dim}2.${c.reset} If you hit permission errors, check your API key has a role:`);
+  console.log(`     ${fmt.code("npx @stronger-ecommerce/gadget-mcp verify")}`);
+  console.log();
+}
+
+// ── Version ───────────────────────────────────────────────────────────────────
+export function runVersion(): void {
+  console.log(currentVersion());
+}
+
+// ── Verify ────────────────────────────────────────────────────────────────────
+export async function runVerify(): Promise<void> {
+  await checkForUpdate();
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  console.log();
+  console.log(fmt.header("  ◆ Gadget MCP — Verify Connection"));
+  console.log();
+
+  // Auto-detect from env vars or sync.json
+  let appSlug = process.env.GADGET_APP ?? "";
+  let environment = process.env.GADGET_ENVIRONMENT ?? "production";
+
+  const syncPath = findSyncJson(process.cwd());
+  if (!appSlug && syncPath) {
+    try {
+      const sync: SyncJson = JSON.parse(readFileSync(syncPath, "utf8"));
+      appSlug = sync.application ?? "";
+      if (appSlug) console.log(fmt.success(`Detected app: ${fmt.label(appSlug)}`));
+    } catch {}
+  }
+
+  const appInput = await prompt(rl, appSlug
+    ? `  ${fmt.label("App slug")} ${c.dim}[${appSlug}]${c.reset}: `
+    : `  ${fmt.label("App slug")} ${c.dim}(e.g. my-app)${c.reset}: `);
+  if (appInput.trim()) appSlug = appInput.trim();
+
+  if (!appSlug) {
+    console.log("\n" + fmt.error("App slug is required."));
+    rl.close();
+    process.exit(1);
+  }
+
+  const envInput = await prompt(rl, `  ${fmt.label("Environment")} ${c.dim}[${environment}]${c.reset}: `);
+  if (envInput.trim()) environment = envInput.trim();
+
+  // Pre-fill key from env var if available
+  const envKey = process.env.GADGET_API_KEY ?? "";
+  const keyPromptSuffix = envKey ? ` ${c.dim}[${mask(envKey)}, Enter to use]${c.reset}` : "";
+  const keyInput = await prompt(rl, `  ${fmt.label("API key")}${keyPromptSuffix}: `);
+  const apiKey = keyInput.trim() || envKey;
+
+  rl.close();
+
+  if (!apiKey) {
+    console.log("\n" + fmt.error("API key is required."));
+    process.exit(1);
+  }
+
+  console.log();
+  process.stdout.write(`  Connecting to ${c.cyan}${appSlug}.gadget.app${c.reset} (${environment})… `);
+  const test = await testConnection(appSlug, environment, apiKey);
+
   if (test.ok) {
     console.log(`${c.green}✔${c.reset}`);
     console.log();
     console.log(fmt.success(`Connected! Found ${c.bold}${test.models}${c.reset} queryable fields.`));
-    console.log(fmt.dim("           Your MCP server is ready to use."));
+    console.log(fmt.dim("           Your API key and role are configured correctly."));
   } else {
     console.log(`${c.red}✖${c.reset}`);
     console.log();
     console.log(fmt.error(`Connection failed: ${test.error}`));
     console.log();
-    console.log(`  Things to check:`);
-    console.log(`  ${c.dim}·${c.reset} Did you deploy the role? ${c.cyan}ggt push${c.reset}`);
-    console.log(`  ${c.dim}·${c.reset} Does the API key have the ${c.bold}${roleToUse}${c.reset} role assigned?`);
-    console.log(`  ${c.dim}·${c.reset} Is the app slug correct? ${c.dim}(${appSlug})${c.reset}`);
-    console.log(`  ${c.dim}·${c.reset} Check keys at: ${c.cyan}${apiKeysUrl(appSlug, environment)}${c.reset}`);
+    printConnectionTips(appSlug, environment, MCP_ROLE);
   }
+  console.log();
+}
+
+// ── List ──────────────────────────────────────────────────────────────────────
+export function runList(): void {
+  const syncPath = findSyncJson(process.cwd());
+  const projectRoot = syncPath ? dirname(dirname(syncPath)) : null;
+
+  console.log();
+  console.log(fmt.header("  ◆ Gadget MCP — Configured Servers"));
+  if (projectRoot) {
+    console.log(fmt.dim(`  Project root: ${projectRoot}`));
+  }
+  console.log();
+
+  const sources = allConfigSources(projectRoot);
+  let total = 0;
+
+  for (const { path: filePath, label, isClaudeUserLevel } of sources) {
+    const entries = scanConfigForGadget(filePath, label, isClaudeUserLevel);
+    if (!entries.length) continue;
+    total += entries.length;
+    console.log(`${c.bold} ${label}${c.reset}  ${c.dim}${filePath}${c.reset}`);
+    for (const e of entries) {
+      console.log(`  ${c.cyan}${e.name}${c.reset}`);
+      console.log(`    App: ${c.bold}${e.app}${c.reset}   Env: ${c.dim}${e.environment}${c.reset}   Key: ${c.dim}${e.keyPreview}${c.reset}`);
+    }
+    console.log();
+  }
+
+  if (total === 0) {
+    console.log(fmt.info("No Gadget MCP servers found in known config locations."));
+    console.log(fmt.dim(`  Run: npx @stronger-ecommerce/gadget-mcp setup`));
+    console.log();
+  } else {
+    console.log(fmt.dim(`  ${total} server${total === 1 ? "" : "s"} found. Run uninstall to remove one.`));
+    console.log();
+  }
+}
+
+// ── Uninstall ─────────────────────────────────────────────────────────────────
+export async function runUninstall(): Promise<void> {
+  const syncPath = findSyncJson(process.cwd());
+  const projectRoot = syncPath ? dirname(dirname(syncPath)) : null;
+
+  console.log();
+  console.log(fmt.header("  ◆ Gadget MCP — Uninstall"));
+  console.log();
+
+  const sources = allConfigSources(projectRoot);
+  const allEntries: FoundEntry[] = sources.flatMap(
+    ({ path: filePath, label, isClaudeUserLevel }) =>
+      scanConfigForGadget(filePath, label, isClaudeUserLevel ?? false)
+  );
+
+  if (allEntries.length === 0) {
+    console.log(fmt.info("No Gadget MCP servers found to remove."));
+    console.log();
+    return;
+  }
+
+  console.log(`  Found ${c.bold}${allEntries.length}${c.reset} configured server${allEntries.length === 1 ? "" : "s"}:`);
+  console.log();
+  allEntries.forEach((e, i) => {
+    console.log(`  ${c.bold}${i + 1}.${c.reset} ${c.cyan}${e.name}${c.reset}  ${c.dim}${e.app} · ${e.source}${c.reset}`);
+  });
+  console.log();
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  const selInput = await prompt(
+    rl,
+    `  Which to remove? ${c.dim}[1-${allEntries.length}, comma-separated, or Enter for all]${c.reset}: `
+  );
+
+  const indices: number[] = selInput.trim()
+    ? selInput.split(",").map(s => parseInt(s.trim(), 10) - 1).filter(i => i >= 0 && i < allEntries.length)
+    : allEntries.map((_, i) => i);
+
+  rl.close();
+
+  if (indices.length === 0) {
+    console.log(fmt.warn("No valid selection — nothing removed."));
+    console.log();
+    return;
+  }
+
+  console.log();
+  for (const idx of indices) {
+    const e = allEntries[idx];
+    process.stdout.write(`  Removing ${c.cyan}${e.name}${c.reset} from ${c.dim}${e.source}${c.reset}… `);
+    try {
+      if (e.isClaudeUserLevel) {
+        // Try claude CLI first, fall back to editing settings.json directly
+        try {
+          execSync(`claude mcp remove ${e.name}`, { stdio: "pipe" });
+        } catch {
+          removeFromJsonConfig(e.configPath, e.name);
+        }
+      } else {
+        removeFromJsonConfig(e.configPath, e.name);
+      }
+      console.log(`${c.green}✔${c.reset}`);
+    } catch (err: any) {
+      console.log(`${c.red}✖${c.reset}  ${c.dim}${err?.message ?? String(err)}${c.reset}`);
+    }
+  }
+
+  console.log();
+  console.log(fmt.dim("  Restart your editor(s) for changes to take effect."));
   console.log();
 }
