@@ -3,6 +3,7 @@
   "version": "1.1.0",
   "description": "Generic read-only MCP server for any Gadget app",
   "type": "module",
+  "main": "dist/index.js",
   "bin": {
     "gadget-mcp": "bin/gadget-mcp.js"
   },

@@ -41,6 +41,7 @@ export async function gql(query: string, variables?: Record<string, unknown>): P
 interface ResolvedListField {
   fieldName: string;       // e.g. "labels", "shopifyOrders"
   filterArgType?: string;  // full type string, e.g. "[LabelFilter!]"
+  sortArgType?: string;    // full type string, e.g. "[LabelSort!]"
 }
 
 let queryFieldsCache: any[] | null = null;
@@ -102,11 +103,13 @@ async function resolveListField(model: string): Promise<ResolvedListField | null
     return null;
   }
 
-  // Find the filter argument and reconstruct its full type string
   const filterArg = field.args?.find((a: any) => a.name === "filter");
   const filterArgType = filterArg ? typeString(filterArg.type) : undefined;
 
-  const result: ResolvedListField = { fieldName: field.name, filterArgType };
+  const sortArg = field.args?.find((a: any) => a.name === "sort");
+  const sortArgType = sortArg ? typeString(sortArg.type) : undefined;
+
+  const result: ResolvedListField = { fieldName: field.name, filterArgType, sortArgType };
   listFieldCache.set(model, result);
   return result;
 }
@@ -167,15 +170,16 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
       }
 
       case "query_records": {
-        const { model, fields, filter, limit = 10 } = args as {
+        const { model, fields, filter, sort, limit = 10, after } = args as {
           model: string;
           fields: string;
           filter?: unknown;
+          sort?: unknown;
           limit?: number;
+          after?: string;
         };
         const first = Math.min(limit, 50);
 
-        // Resolve the real connection field name and filter type via introspection
         const resolved = await resolveListField(model);
         if (!resolved) {
           return {
@@ -184,23 +188,38 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
           };
         }
 
-        const { fieldName, filterArgType } = resolved;
-        const filterClause = filter ? `, filter: $filter` : "";
-        const varsDef = filter && filterArgType
-          ? `($first: Int, $filter: ${filterArgType})`
-          : `($first: Int)`;
+        const { fieldName, filterArgType, sortArgType } = resolved;
+        const varParts: string[] = ["$first: Int"];
+        const argParts: string[] = ["first: $first"];
         const varsVal: Record<string, unknown> = { first };
-        if (filter) varsVal.filter = filter;
+
+        if (after) {
+          varParts.push("$after: String");
+          argParts.push("after: $after");
+          varsVal.after = after;
+        }
+
+        if (filter !== undefined && filterArgType) {
+          varParts.push(`$filter: ${filterArgType}`);
+          argParts.push("filter: $filter");
+          varsVal.filter = filter;
+        }
+
+        if (sort !== undefined && sortArgType) {
+          varParts.push(`$sort: ${sortArgType}`);
+          argParts.push("sort: $sort");
+          varsVal.sort = sort;
+        }
 
         const query = `
-          query QueryRecords${varsDef} {
-            ${fieldName}(first: $first${filterClause}) {
+          query QueryRecords(${varParts.join(", ")}) {
+            ${fieldName}(${argParts.join(", ")}) {
               edges {
                 node {
                   ${fields}
                 }
               }
-              pageInfo { hasNextPage }
+              pageInfo { hasNextPage endCursor }
             }
           }
         `;
@@ -211,8 +230,52 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         return {
           content: [{
             type: "text",
-            text: JSON.stringify({ records, hasMore: connection.pageInfo.hasNextPage }, null, 2),
+            text: JSON.stringify({
+              records,
+              hasMore: connection.pageInfo.hasNextPage,
+              endCursor: connection.pageInfo.endCursor ?? null,
+            }, null, 2),
           }],
+        };
+      }
+
+      case "count_records": {
+        const { model, filter } = args as { model: string; filter?: unknown };
+
+        const resolved = await resolveListField(model);
+        if (!resolved) {
+          return {
+            content: [{ type: "text", text: `No connection field found for model "${model}". Use list_models to browse available models.` }],
+            isError: true,
+          };
+        }
+
+        const { fieldName, filterArgType } = resolved;
+        const varParts: string[] = [];
+        const argParts: string[] = [];
+        const varsVal: Record<string, unknown> = {};
+
+        if (filter !== undefined && filterArgType) {
+          varParts.push(`$filter: ${filterArgType}`);
+          argParts.push("filter: $filter");
+          varsVal.filter = filter;
+        }
+
+        const varsDef = varParts.length ? `(${varParts.join(", ")})` : "";
+        const argsClause = argParts.length ? `(${argParts.join(", ")})` : "";
+
+        const query = `
+          query CountRecords${varsDef} {
+            ${fieldName}${argsClause} {
+              count
+            }
+          }
+        `;
+
+        const data = await gql(query, Object.keys(varsVal).length ? varsVal : undefined);
+        const count = data[fieldName].count;
+        return {
+          content: [{ type: "text", text: JSON.stringify({ model, count }, null, 2) }],
         };
       }
 
@@ -227,6 +290,141 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         `;
         const data = await gql(query, { id });
         return { content: [{ type: "text", text: JSON.stringify(data[model], null, 2) }] };
+      }
+
+      case "introspect_filters": {
+        const { model } = args as { model: string };
+
+        const resolved = await resolveListField(model);
+        if (!resolved?.filterArgType) {
+          return {
+            content: [{ type: "text", text: `No filter type found for model "${model}". Use list_models to verify the model name.` }],
+            isError: true,
+          };
+        }
+
+        // Extract base type name from e.g. "[ShopifyOrderFilter!]" → "ShopifyOrderFilter"
+        const filterTypeName = resolved.filterArgType.replace(/[\[\]!]/g, "");
+
+        const data = await gql(`
+          query IntrospectFilters($name: String!) {
+            __type(name: $name) {
+              name
+              inputFields {
+                name
+                description
+                type {
+                  name kind
+                  ofType { name kind ofType { name kind } }
+                }
+              }
+            }
+          }
+        `, { name: filterTypeName });
+
+        if (!data.__type) {
+          return {
+            content: [{ type: "text", text: `Filter type "${filterTypeName}" not found in schema.` }],
+            isError: true,
+          };
+        }
+
+        return { content: [{ type: "text", text: JSON.stringify(data.__type, null, 2) }] };
+      }
+
+      case "introspect_actions": {
+        const data = await gql(`
+          query {
+            __schema {
+              mutationType {
+                fields {
+                  name
+                  description
+                  args {
+                    name
+                    description
+                    type {
+                      name kind
+                      ofType { name kind ofType { name kind } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `);
+
+        if (!data.__schema.mutationType) {
+          return { content: [{ type: "text", text: "No actions (mutations) found in this schema." }] };
+        }
+
+        const actions = (data.__schema.mutationType.fields as any[]).map((f) => ({
+          name: f.name,
+          description: f.description ?? "",
+          args: (f.args ?? []).map((a: any) => ({
+            name: a.name,
+            type: typeString(a.type),
+            description: a.description ?? "",
+          })),
+        }));
+
+        return { content: [{ type: "text", text: JSON.stringify(actions, null, 2) }] };
+      }
+
+      case "get_schema_overview": {
+        const data = await gql(`
+          query {
+            __schema {
+              queryType {
+                fields {
+                  name
+                  type {
+                    kind name
+                    ofType { kind name }
+                  }
+                }
+              }
+              types {
+                name
+                kind
+                description
+                fields {
+                  name
+                  description
+                  type {
+                    name kind
+                    ofType { name kind ofType { name kind } }
+                  }
+                }
+              }
+            }
+          }
+        `);
+
+        // Identify model names from Connection return types in query fields
+        const modelNames = new Set<string>();
+        for (const f of data.__schema.queryType.fields as any[]) {
+          let t = f.type;
+          if (t?.kind === "NON_NULL") t = t.ofType;
+          if (t?.name?.endsWith("Connection")) {
+            modelNames.add(t.name.replace(/Connection$/, ""));
+          }
+        }
+
+        const models = (data.__schema.types as any[])
+          .filter((t) => modelNames.has(t.name) && t.kind === "OBJECT")
+          .map((t) => ({
+            name: t.name,
+            description: t.description ?? "",
+            fields: (t.fields ?? []).map((f: any) => ({
+              name: f.name,
+              type: typeString(f.type),
+              description: f.description ?? "",
+            })),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        return { content: [{ type: "text", text: JSON.stringify(models, null, 2) }] };
       }
 
       case "run_graphql": {
@@ -278,7 +476,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "query_records",
     description:
-      "Query records from any Gadget model. Specify the model name (singular camelCase) and a GraphQL field selection. Use introspect_model first to discover available fields.",
+      "Query records from any Gadget model. Supports filtering, sorting, pagination cursors, and field selection. Use introspect_model first to discover available fields, and introspect_filters to see valid filter shapes.",
     inputSchema: {
       type: "object",
       required: ["model", "fields"],
@@ -289,9 +487,27 @@ export const TOOL_DEFINITIONS = [
           description: "GraphQL field selection, e.g. \"id name email createdAt\"",
         },
         filter: {
-          description: "Filter value — shape depends on the model's schema (object or array of filter objects). Use run_graphql for complex filters.",
+          description: "Filter value — use introspect_filters to discover valid filter fields and shapes.",
+        },
+        sort: {
+          description: "Sort value — array of sort objects, e.g. [{ createdAt: { sortOrder: \"Descending\" } }]",
         },
         limit: { type: "number", description: "Max records to return (default 10, max 50)" },
+        after: { type: "string", description: "Pagination cursor — pass the endCursor from a previous response to fetch the next page" },
+      },
+    },
+  },
+  {
+    name: "count_records",
+    description: "Return the total number of records for a Gadget model, with optional filtering.",
+    inputSchema: {
+      type: "object",
+      required: ["model"],
+      properties: {
+        model: { type: "string", description: "Model name in singular camelCase, e.g. shopifyOrder, label" },
+        filter: {
+          description: "Optional filter to count only matching records. Use introspect_filters to discover valid filter shapes.",
+        },
       },
     },
   },
@@ -307,6 +523,30 @@ export const TOOL_DEFINITIONS = [
         fields: { type: "string", description: "GraphQL field selection, e.g. \"id name email createdAt\"" },
       },
     },
+  },
+  {
+    name: "introspect_filters",
+    description:
+      "Show all available filter fields and their types for a Gadget model. Use this to construct valid filter arguments for query_records and count_records.",
+    inputSchema: {
+      type: "object",
+      required: ["model"],
+      properties: {
+        model: { type: "string", description: "Model name in singular camelCase, e.g. shopifyOrder, label" },
+      },
+    },
+  },
+  {
+    name: "introspect_actions",
+    description:
+      "List all actions (mutations) available in this Gadget app, including their arguments. Useful for understanding what write operations are available, even though this server is read-only.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "get_schema_overview",
+    description:
+      "Return all models with their fields and types in a single call. Use this for a broad understanding of the app schema before diving into specific models.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "run_graphql",

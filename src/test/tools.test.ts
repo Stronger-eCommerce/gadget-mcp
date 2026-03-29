@@ -115,6 +115,10 @@ const shopifyOrderIntrospection = {
               name: "filter",
               type: { kind: "LIST", name: null, ofType: { kind: "NON_NULL", name: null, ofType: { kind: "INPUT_OBJECT", name: "ShopifyOrderFilter", ofType: null } } },
             },
+            {
+              name: "sort",
+              type: { kind: "LIST", name: null, ofType: { kind: "NON_NULL", name: null, ofType: { kind: "INPUT_OBJECT", name: "ShopifyOrderSort", ofType: null } } },
+            },
           ],
           type: { kind: "NON_NULL", name: null, ofType: { kind: "OBJECT", name: "ShopifyOrderConnection", ofType: null } },
         },
@@ -124,35 +128,71 @@ const shopifyOrderIntrospection = {
 };
 
 describe("query_records", () => {
-  it("returns records array", async () => {
-    // Call 1: introspection (resolveListField)
+  it("returns records array with endCursor", async () => {
     mockGql(shopifyOrderIntrospection);
-    // Call 2: actual records query
     mockGql({
       shopifyOrders: {
         edges: [
           { node: { id: "1", name: "#1001" } },
           { node: { id: "2", name: "#1002" } },
         ],
-        pageInfo: { hasNextPage: false },
+        pageInfo: { hasNextPage: false, endCursor: null },
       },
     });
     const result = await handleTool("query_records", { model: "shopifyOrder", fields: "id name" });
-    const { records, hasMore } = JSON.parse(result.content[0].text);
+    const { records, hasMore, endCursor } = JSON.parse(result.content[0].text);
     expect(records).toHaveLength(2);
     expect(records[0].name).toBe("#1001");
     expect(hasMore).toBe(false);
+    expect(endCursor).toBeNull();
   });
 
   it("caps limit at 50", async () => {
-    // Call 1: introspection
     mockGql(shopifyOrderIntrospection);
-    // Call 2: actual records query
-    mockGql({ shopifyOrders: { edges: [], pageInfo: { hasNextPage: false } } });
+    mockGql({ shopifyOrders: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } });
     await handleTool("query_records", { model: "shopifyOrder", fields: "id", limit: 999 });
-    // calls[0] = introspection, calls[1] = records query
     const body = JSON.parse(mockFetch.mock.calls[1][1].body);
     expect(body.variables.first).toBe(50);
+  });
+
+  it("passes sort variable when sort is provided", async () => {
+    mockGql(shopifyOrderIntrospection);
+    mockGql({ shopifyOrders: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } });
+    const sort = [{ createdAt: { sortOrder: "Descending" } }];
+    await handleTool("query_records", { model: "shopifyOrder", fields: "id", sort });
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.variables.sort).toEqual(sort);
+    expect(body.query).toContain("$sort:");
+    expect(body.query).toContain("sort: $sort");
+  });
+
+  it("passes after cursor for pagination", async () => {
+    mockGql(shopifyOrderIntrospection);
+    mockGql({
+      shopifyOrders: {
+        edges: [{ node: { id: "3", name: "#1003" } }],
+        pageInfo: { hasNextPage: false, endCursor: "cursor-xyz" },
+      },
+    });
+    await handleTool("query_records", { model: "shopifyOrder", fields: "id name", after: "cursor-abc" });
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.variables.after).toBe("cursor-abc");
+    expect(body.query).toContain("$after: String");
+    expect(body.query).toContain("after: $after");
+  });
+
+  it("returns endCursor from pageInfo", async () => {
+    mockGql(shopifyOrderIntrospection);
+    mockGql({
+      shopifyOrders: {
+        edges: [{ node: { id: "1" } }],
+        pageInfo: { hasNextPage: true, endCursor: "cursor-page2" },
+      },
+    });
+    const result = await handleTool("query_records", { model: "shopifyOrder", fields: "id" });
+    const { hasMore, endCursor } = JSON.parse(result.content[0].text);
+    expect(hasMore).toBe(true);
+    expect(endCursor).toBe("cursor-page2");
   });
 
   it("returns error when model has no connection field", async () => {
@@ -163,6 +203,33 @@ describe("query_records", () => {
   });
 });
 
+// ── count_records ─────────────────────────────────────────────────────────────
+describe("count_records", () => {
+  it("returns the record count", async () => {
+    mockGql(shopifyOrderIntrospection);
+    mockGql({ shopifyOrders: { count: 42 } });
+    const result = await handleTool("count_records", { model: "shopifyOrder" });
+    const { count } = JSON.parse(result.content[0].text);
+    expect(count).toBe(42);
+  });
+
+  it("passes filter when provided", async () => {
+    mockGql(shopifyOrderIntrospection);
+    mockGql({ shopifyOrders: { count: 5 } });
+    const filter = [{ financialStatus: { equals: "paid" } }];
+    await handleTool("count_records", { model: "shopifyOrder", filter });
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.variables.filter).toEqual(filter);
+    expect(body.query).toContain("$filter:");
+  });
+
+  it("returns error when model not found", async () => {
+    mockGql({ __schema: { queryType: { fields: [] } } });
+    const result = await handleTool("count_records", { model: "missing" });
+    expect(result.isError).toBe(true);
+  });
+});
+
 // ── get_record ────────────────────────────────────────────────────────────────
 describe("get_record", () => {
   it("returns a single record", async () => {
@@ -170,6 +237,122 @@ describe("get_record", () => {
     const result = await handleTool("get_record", { model: "shopifyOrder", id: "42", fields: "id name" });
     const record = JSON.parse(result.content[0].text);
     expect(record.id).toBe("42");
+  });
+});
+
+// ── introspect_filters ────────────────────────────────────────────────────────
+describe("introspect_filters", () => {
+  it("returns filter input fields", async () => {
+    mockGql(shopifyOrderIntrospection);
+    mockGql({
+      __type: {
+        name: "ShopifyOrderFilter",
+        inputFields: [
+          { name: "id", description: null, type: { name: "IDFilter", kind: "INPUT_OBJECT", ofType: null } },
+          { name: "financialStatus", description: null, type: { name: "StringFilter", kind: "INPUT_OBJECT", ofType: null } },
+        ],
+      },
+    });
+    const result = await handleTool("introspect_filters", { model: "shopifyOrder" });
+    const type = JSON.parse(result.content[0].text);
+    expect(type.name).toBe("ShopifyOrderFilter");
+    expect(type.inputFields).toHaveLength(2);
+  });
+
+  it("returns error when model not found", async () => {
+    mockGql({ __schema: { queryType: { fields: [] } } });
+    const result = await handleTool("introspect_filters", { model: "missing" });
+    expect(result.isError).toBe(true);
+  });
+});
+
+// ── introspect_actions ────────────────────────────────────────────────────────
+describe("introspect_actions", () => {
+  it("returns mutation list", async () => {
+    mockGql({
+      __schema: {
+        mutationType: {
+          fields: [
+            {
+              name: "createShopifyOrder",
+              description: "Create an order",
+              args: [
+                { name: "shopifyOrder", description: null, type: { name: null, kind: "INPUT_OBJECT", ofType: { name: "CreateShopifyOrderInput", kind: "INPUT_OBJECT", ofType: null } } },
+              ],
+            },
+            {
+              name: "deleteShopifyOrder",
+              description: "Delete an order",
+              args: [
+                { name: "id", description: null, type: { name: "GadgetID", kind: "SCALAR", ofType: null } },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    const result = await handleTool("introspect_actions", {});
+    const actions = JSON.parse(result.content[0].text);
+    expect(actions).toHaveLength(2);
+    expect(actions[0].name).toBe("createShopifyOrder");
+    expect(actions[0].args[0].name).toBe("shopifyOrder");
+  });
+
+  it("handles schema with no mutations", async () => {
+    mockGql({ __schema: { mutationType: null } });
+    const result = await handleTool("introspect_actions", {});
+    expect(result.content[0].text).toContain("No actions");
+  });
+});
+
+// ── get_schema_overview ───────────────────────────────────────────────────────
+describe("get_schema_overview", () => {
+  it("returns all models with fields", async () => {
+    mockGql({
+      __schema: {
+        queryType: {
+          fields: [
+            { name: "labels", type: { kind: "OBJECT", name: "LabelConnection", ofType: null } },
+            { name: "shopifyOrders", type: { kind: "NON_NULL", name: null, ofType: { kind: "OBJECT", name: "ShopifyOrderConnection" } } },
+          ],
+        },
+        types: [
+          {
+            name: "Label",
+            kind: "OBJECT",
+            description: "A label",
+            fields: [
+              { name: "id", description: null, type: { name: "ID", kind: "SCALAR", ofType: null } },
+              { name: "name", description: null, type: { name: "String", kind: "SCALAR", ofType: null } },
+            ],
+          },
+          {
+            name: "ShopifyOrder",
+            kind: "OBJECT",
+            description: null,
+            fields: [
+              { name: "id", description: null, type: { name: "ID", kind: "SCALAR", ofType: null } },
+            ],
+          },
+          {
+            name: "LabelConnection",
+            kind: "OBJECT",
+            description: null,
+            fields: [{ name: "edges", description: null, type: { name: null, kind: "LIST", ofType: { name: "LabelEdge", kind: "OBJECT", ofType: null } } }],
+          },
+        ],
+      },
+    });
+    const result = await handleTool("get_schema_overview", {});
+    const models = JSON.parse(result.content[0].text);
+    // Only Label and ShopifyOrder — LabelConnection is excluded
+    expect(models).toHaveLength(2);
+    expect(models.find((m: any) => m.name === "Label")).toBeDefined();
+    expect(models.find((m: any) => m.name === "ShopifyOrder")).toBeDefined();
+    expect(models.find((m: any) => m.name === "LabelConnection")).toBeUndefined();
+    // Models sorted alphabetically
+    expect(models[0].name).toBe("Label");
+    expect(models[1].name).toBe("ShopifyOrder");
   });
 });
 
