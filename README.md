@@ -114,6 +114,12 @@ Once connected, ask Claude:
 
 ---
 
+## Future features
+
+Planned ideas and research notes (including logs / `ggt` integration for agents) live in [FUTURE_FEATURES.md](./FUTURE_FEATURES.md).
+
+---
+
 ## Contributing
 
 Bug reports and pull requests are welcome!
