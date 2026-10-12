@@ -8,7 +8,9 @@
  *   GADGET_API_KEY     Production API key from <app>.gadget.app/edit/settings/api-keys
  *
  * Optional:
- *   GADGET_ENVIRONMENT "production" (default) | "development"
+ *   GADGET_ENVIRONMENT   "production" (default) | "development"
+ *   GADGET_ALLOW_WRITES  "true" to enable create_record, update_record, run_action
+ *   GADGET_ALLOW_DELETES "true" to enable delete_record (and delete actions via run_action)
  *
  * ── REGISTER IN CLAUDE CODE ─────────────────────────────────────────────────
  *   claude mcp add my-app-gadget \
@@ -29,7 +31,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { handleTool, TOOL_DEFINITIONS } from "./tools.js";
+import { handleTool, getToolDefinitions } from "./tools.js";
 import { checkForUpdate } from "./setup.js";
 
 const GADGET_APP = process.env.GADGET_APP;
@@ -45,7 +47,7 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFINITIONS }));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getToolDefinitions() }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;

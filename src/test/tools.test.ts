@@ -9,7 +9,7 @@ process.env.GADGET_APP = "test-app";
 process.env.GADGET_API_KEY = "test-key-1234";
 
 // Dynamically import so env vars are set first
-const { gql, handleTool, _resetCaches } = await import("../tools.js");
+const { gql, handleTool, _resetCaches, getToolDefinitions } = await import("../tools.js");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function mockGql(data: unknown) {
@@ -29,6 +29,8 @@ function mockGqlError(message: string) {
 beforeEach(() => {
   mockFetch.mockReset();
   _resetCaches();
+  delete process.env.GADGET_ALLOW_WRITES;
+  delete process.env.GADGET_ALLOW_DELETES;
 });
 
 // ── gql helper ────────────────────────────────────────────────────────────────
@@ -369,6 +371,151 @@ describe("run_graphql", () => {
     const result = await handleTool("run_graphql", { query: "mutation { deleteOrder(id: 1) { id } }" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("read-only");
+  });
+});
+
+// ── write / delete tools ──────────────────────────────────────────────────────
+const NON_NULL = (ofType: any) => ({ kind: "NON_NULL", name: null, ofType });
+const mutationIntrospection = {
+  __schema: {
+    mutationType: {
+      fields: [
+        { name: "createLabel", args: [{ name: "label", type: { kind: "INPUT_OBJECT", name: "CreateLabelInput", ofType: null } }] },
+        {
+          name: "updateLabel",
+          args: [
+            { name: "id", type: NON_NULL({ kind: "SCALAR", name: "GadgetID", ofType: null }) },
+            { name: "label", type: { kind: "INPUT_OBJECT", name: "UpdateLabelInput", ofType: null } },
+          ],
+        },
+        { name: "deleteLabel", args: [{ name: "id", type: NON_NULL({ kind: "SCALAR", name: "GadgetID", ofType: null }) }] },
+        { name: "syncProducts", args: [] },
+      ],
+    },
+  },
+};
+
+describe("tool definitions", () => {
+  const names = () => getToolDefinitions().map((t: any) => t.name);
+
+  it("exposes only read tools by default", () => {
+    expect(names()).not.toContain("create_record");
+    expect(names()).not.toContain("delete_record");
+  });
+
+  it("exposes write tools when GADGET_ALLOW_WRITES=true", () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    expect(names()).toEqual(expect.arrayContaining(["create_record", "update_record", "run_action"]));
+    expect(names()).not.toContain("delete_record");
+  });
+
+  it("exposes delete tool when GADGET_ALLOW_DELETES=true", () => {
+    process.env.GADGET_ALLOW_DELETES = "1";
+    expect(names()).toContain("delete_record");
+    expect(names()).not.toContain("create_record");
+  });
+});
+
+describe("create_record", () => {
+  it("is refused when writes are disabled", async () => {
+    const result = await handleTool("create_record", { model: "label", data: { name: "VIP" } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("GADGET_ALLOW_WRITES");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("runs the create mutation with typed variables", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    mockGql({ createLabel: { success: true, errors: null, label: { id: "7", name: "VIP" } } });
+    const result = await handleTool("create_record", { model: "label", data: { name: "VIP" }, fields: "id name" });
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text).label.id).toBe("7");
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.query).toContain("mutation RunAction($label: CreateLabelInput)");
+    expect(body.query).toContain("createLabel(label: $label)");
+    expect(body.query).toContain("label { id name }");
+    expect(body.variables).toEqual({ label: { name: "VIP" } });
+  });
+
+  it("returns isError when the action reports success: false", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    mockGql({ createLabel: { success: false, errors: [{ message: "name is required", code: "GGT_INVALID_RECORD" }], label: null } });
+    const result = await handleTool("create_record", { model: "label", data: {} });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("name is required");
+  });
+
+  it("returns error when the model has no create action", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    const result = await handleTool("create_record", { model: "widget", data: {} });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('No action "createWidget"');
+  });
+});
+
+describe("update_record", () => {
+  it("passes id and model input", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    mockGql({ updateLabel: { success: true, errors: null, label: { id: "7" } } });
+    await handleTool("update_record", { model: "label", id: "7", data: { name: "Gold" } });
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.query).toContain("$id: GadgetID!");
+    expect(body.query).toContain("updateLabel(id: $id, label: $label)");
+    expect(body.variables).toEqual({ id: "7", label: { name: "Gold" } });
+  });
+});
+
+describe("delete_record", () => {
+  it("is refused when deletes are disabled, even with writes on", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    const result = await handleTool("delete_record", { model: "label", id: "7" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("GADGET_ALLOW_DELETES");
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("runs the delete mutation when enabled", async () => {
+    process.env.GADGET_ALLOW_DELETES = "true";
+    mockGql(mutationIntrospection);
+    mockGql({ deleteLabel: { success: true, errors: null } });
+    const result = await handleTool("delete_record", { model: "label", id: "7" });
+    expect(result.isError).toBeUndefined();
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.query).toContain("deleteLabel(id: $id)");
+    expect(body.variables).toEqual({ id: "7" });
+  });
+});
+
+describe("run_action", () => {
+  it("runs a global action with no args", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    mockGql({ syncProducts: { success: true, errors: null, result: { synced: 3 } } });
+    const result = await handleTool("run_action", { action: "syncProducts", fields: "result" });
+    expect(JSON.parse(result.content[0].text).result.synced).toBe(3);
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.query).toContain("syncProducts {");
+    expect(body.variables).toBeUndefined();
+  });
+
+  it("rejects unknown arguments", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    const result = await handleTool("run_action", { action: "updateLabel", args: { id: "1", bogus: true } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("bogus");
+  });
+
+  it("blocks delete actions unless deletes are enabled", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    const result = await handleTool("run_action", { action: "bulkDeleteLabels", args: { ids: ["1"] } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("GADGET_ALLOW_DELETES");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 

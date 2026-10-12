@@ -3,6 +3,18 @@ const GADGET_APP = process.env.GADGET_APP;
 const GADGET_API_KEY = process.env.GADGET_API_KEY;
 const GADGET_ENVIRONMENT = process.env.GADGET_ENVIRONMENT ?? "production";
 
+// Write access is opt-in. Read at call time so the server (and tests) can toggle it via env.
+function envFlag(name: string): boolean {
+  return ["1", "true", "yes", "on"].includes((process.env[name] ?? "").trim().toLowerCase());
+}
+export const writesEnabled = () => envFlag("GADGET_ALLOW_WRITES");
+export const deletesEnabled = () => envFlag("GADGET_ALLOW_DELETES");
+
+const WRITES_DISABLED_MSG =
+  "Write tools are disabled. Set GADGET_ALLOW_WRITES=true in this MCP server's env to enable create/update/run_action.";
+const DELETES_DISABLED_MSG =
+  "Delete is disabled. Set GADGET_ALLOW_DELETES=true in this MCP server's env to enable deleting records.";
+
 export const GRAPHQL_URL =
   GADGET_ENVIRONMENT === "development"
     ? `https://${GADGET_APP}--development.gadget.app/api/graphql`
@@ -46,11 +58,13 @@ interface ResolvedListField {
 
 let queryFieldsCache: any[] | null = null;
 const listFieldCache = new Map<string, ResolvedListField | null>();
+let mutationFieldsCache: any[] | null = null;
 
 /** Reset introspection caches — exposed for unit tests only */
 export function _resetCaches() {
   queryFieldsCache = null;
   listFieldCache.clear();
+  mutationFieldsCache = null;
 }
 
 // Reconstruct a type string from a GraphQL __type fragment (handles NON_NULL / LIST nesting)
@@ -113,6 +127,95 @@ async function resolveListField(model: string): Promise<ResolvedListField | null
   listFieldCache.set(model, result);
   return result;
 }
+
+// ── Mutation resolver (introspection cache) ───────────────────────────────────
+interface ResolvedMutation {
+  name: string;
+  args: { name: string; type: string }[];
+}
+
+async function resolveMutation(name: string): Promise<ResolvedMutation | null> {
+  if (!mutationFieldsCache) {
+    const data = await gql(`
+      query {
+        __schema {
+          mutationType {
+            fields {
+              name
+              args {
+                name
+                type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
+              }
+            }
+          }
+        }
+      }
+    `);
+    mutationFieldsCache = data.__schema.mutationType?.fields ?? [];
+  }
+  const field = mutationFieldsCache!.find((f: any) => f.name === name);
+  if (!field) return null;
+  return {
+    name: field.name,
+    args: (field.args ?? []).map((a: any) => ({ name: a.name, type: typeString(a.type) })),
+  };
+}
+
+const ERRORS_SELECTION = `errors { message code ... on InvalidRecordError { validationErrors { apiIdentifier message } } }`;
+
+function isDeleteAction(name: string): boolean {
+  return /^(bulk)?delete/i.test(name);
+}
+
+/**
+ * Execute a Gadget action mutation. Only args the action declares are sent, each typed
+ * from introspection. Returns the action result, or an MCP error if success is false.
+ */
+async function runMutation(
+  action: string,
+  args: Record<string, unknown>,
+  selection: string
+): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
+  const resolved = await resolveMutation(action);
+  if (!resolved) {
+    return {
+      content: [{ type: "text", text: `No action "${action}" found. Use introspect_actions to see available actions.` }],
+      isError: true,
+    };
+  }
+
+  const unknown = Object.keys(args).filter((k) => !resolved.args.some((a) => a.name === k));
+  if (unknown.length) {
+    return {
+      content: [{
+        type: "text",
+        text: `Unknown argument(s) for ${action}: ${unknown.join(", ")}. Accepted: ${resolved.args.map((a) => `${a.name}: ${a.type}`).join(", ") || "(none)"}`,
+      }],
+      isError: true,
+    };
+  }
+
+  const used = resolved.args.filter((a) => args[a.name] !== undefined);
+  const varsDef = used.length ? `(${used.map((a) => `$${a.name}: ${a.type}`).join(", ")})` : "";
+  const argsClause = used.length ? `(${used.map((a) => `${a.name}: $${a.name}`).join(", ")})` : "";
+
+  const query = `
+    mutation RunAction${varsDef} {
+      ${action}${argsClause} {
+        ${selection}
+      }
+    }
+  `;
+
+  const data = await gql(query, used.length ? args : undefined);
+  const result = data[action];
+  return {
+    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    ...(result?.success === false ? { isError: true } : {}),
+  };
+}
+
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // ── Tool handler ──────────────────────────────────────────────────────────────
 export async function handleTool(name: string, args: Record<string, any>): Promise<{
@@ -432,12 +535,57 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         const trimmed = query.trim().toLowerCase();
         if (trimmed.startsWith("mutation")) {
           return {
-            content: [{ type: "text", text: "Mutations are not allowed — this server is read-only." }],
+            content: [{
+              type: "text",
+              text: "Mutations are not allowed in run_graphql. " +
+                (writesEnabled()
+                  ? "Use create_record, update_record, delete_record, or run_action instead."
+                  : "This server is read-only; set GADGET_ALLOW_WRITES=true to enable write tools."),
+            }],
             isError: true,
           };
         }
         const data = await gql(query, variables);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+      }
+
+      case "create_record": {
+        if (!writesEnabled()) return { content: [{ type: "text", text: WRITES_DISABLED_MSG }], isError: true };
+        const { model, data, fields = "id" } = args as { model: string; data: Record<string, unknown>; fields?: string };
+        return runMutation(
+          `create${capitalize(model)}`,
+          { [model]: data },
+          `success ${ERRORS_SELECTION} ${model} { ${fields} }`
+        );
+      }
+
+      case "update_record": {
+        if (!writesEnabled()) return { content: [{ type: "text", text: WRITES_DISABLED_MSG }], isError: true };
+        const { model, id, data, fields = "id" } = args as {
+          model: string; id: string; data: Record<string, unknown>; fields?: string;
+        };
+        return runMutation(
+          `update${capitalize(model)}`,
+          { id, [model]: data },
+          `success ${ERRORS_SELECTION} ${model} { ${fields} }`
+        );
+      }
+
+      case "delete_record": {
+        if (!deletesEnabled()) return { content: [{ type: "text", text: DELETES_DISABLED_MSG }], isError: true };
+        const { model, id } = args as { model: string; id: string };
+        return runMutation(`delete${capitalize(model)}`, { id }, `success ${ERRORS_SELECTION}`);
+      }
+
+      case "run_action": {
+        if (!writesEnabled()) return { content: [{ type: "text", text: WRITES_DISABLED_MSG }], isError: true };
+        const { action, args: actionArgs = {}, fields = "" } = args as {
+          action: string; args?: Record<string, unknown>; fields?: string;
+        };
+        if (isDeleteAction(action) && !deletesEnabled()) {
+          return { content: [{ type: "text", text: DELETES_DISABLED_MSG }], isError: true };
+        }
+        return runMutation(action, actionArgs, `success ${ERRORS_SELECTION} ${fields}`);
       }
 
       default:
@@ -452,6 +600,7 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
 }
 
 // ── Tool definitions (for MCP ListTools) ──────────────────────────────────────
+/** Read-only tools — always available */
 export const TOOL_DEFINITIONS = [
   {
     name: "introspect_model",
@@ -539,7 +688,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "introspect_actions",
     description:
-      "List all actions (mutations) available in this Gadget app, including their arguments. Useful for understanding what write operations are available, even though this server is read-only.",
+      "List all actions (mutations) available in this Gadget app, including their arguments. Use this to find action names and argument shapes for run_action, create_record, and update_record.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -562,3 +711,76 @@ export const TOOL_DEFINITIONS = [
     },
   },
 ];
+
+const WRITE_TOOL_DEFINITIONS = [
+  {
+    name: "create_record",
+    description:
+      "Create a record by running the model's create action. Enabled by GADGET_ALLOW_WRITES. Use introspect_actions to see the create input shape (e.g. CreateLabelInput).",
+    inputSchema: {
+      type: "object",
+      required: ["model", "data"],
+      properties: {
+        model: { type: "string", description: "Model name in singular camelCase, e.g. label, shopifyOrder" },
+        data: { type: "object", description: "Field values for the new record, e.g. { \"name\": \"VIP\" }" },
+        fields: { type: "string", description: "GraphQL field selection to return for the created record (default \"id\")" },
+      },
+    },
+  },
+  {
+    name: "update_record",
+    description:
+      "Update a record by running the model's update action. Enabled by GADGET_ALLOW_WRITES. Only the fields in data are changed.",
+    inputSchema: {
+      type: "object",
+      required: ["model", "id", "data"],
+      properties: {
+        model: { type: "string", description: "Model name in singular camelCase, e.g. label, shopifyOrder" },
+        id: { type: "string", description: "Record ID" },
+        data: { type: "object", description: "Field values to change, e.g. { \"name\": \"VIP\" }" },
+        fields: { type: "string", description: "GraphQL field selection to return for the updated record (default \"id\")" },
+      },
+    },
+  },
+  {
+    name: "run_action",
+    description:
+      "Run any Gadget action (model or global) by its mutation name, e.g. publishBlogPost or syncProducts. Enabled by GADGET_ALLOW_WRITES; delete actions also need GADGET_ALLOW_DELETES. Use introspect_actions to discover action names and arguments.",
+    inputSchema: {
+      type: "object",
+      required: ["action"],
+      properties: {
+        action: { type: "string", description: "Mutation name as listed by introspect_actions, e.g. publishBlogPost" },
+        args: { type: "object", description: "Action arguments keyed by argument name, e.g. { \"id\": \"1\", \"blogPost\": { ... } }" },
+        fields: {
+          type: "string",
+          description: "Extra selection on the action result, e.g. \"blogPost { id title }\" for model actions or \"result\" for global actions",
+        },
+      },
+    },
+  },
+];
+
+const DELETE_TOOL_DEFINITIONS = [
+  {
+    name: "delete_record",
+    description: "Permanently delete a record by running the model's delete action. Enabled by GADGET_ALLOW_DELETES.",
+    inputSchema: {
+      type: "object",
+      required: ["model", "id"],
+      properties: {
+        model: { type: "string", description: "Model name in singular camelCase, e.g. label, shopifyOrder" },
+        id: { type: "string", description: "Record ID" },
+      },
+    },
+  },
+];
+
+/** Tools exposed to the client, based on which write flags are enabled */
+export function getToolDefinitions() {
+  return [
+    ...TOOL_DEFINITIONS,
+    ...(writesEnabled() ? WRITE_TOOL_DEFINITIONS : []),
+    ...(deletesEnabled() ? DELETE_TOOL_DEFINITIONS : []),
+  ];
+}
