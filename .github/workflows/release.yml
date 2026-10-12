@@ -25,16 +25,19 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: main
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+
+      # Trusted publishing (OIDC, no token to expire) needs npm >= 11.5.1
+      - run: npm install -g npm@latest
 
       - run: npm ci
       - run: npm run build
@@ -77,6 +80,8 @@ jobs:
             git push origin "v$VERSION"
           fi
 
+      # Uses npm Trusted Publishing when it's configured for this workflow on npmjs.com;
+      # otherwise falls back to the NPM_TOKEN secret.
       - name: Publish to npm
         run: npm publish --provenance --access public
         env:
