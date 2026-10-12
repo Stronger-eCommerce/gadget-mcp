@@ -6,6 +6,7 @@ import { execSync } from "child_process";
 import {
   PKG_NAME, RELEASES_URL, box, checkForUpdate, compareVersions, currentVersion, getUpdateInfo,
 } from "./update.js";
+import { buildIssueUrl, diagnostics, openInBrowser } from "./report.js";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 const c = {
@@ -662,6 +663,7 @@ export function runHelp(): void {
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp list")}       List all configured Gadget MCP servers`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp uninstall")}  Remove a configured Gadget MCP server`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp upgrade")}    Update to the latest version`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp bug")}        Report a bug (opens a pre-filled GitHub issue)`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --version")}  Show installed version`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --help")}     Show this help`);
   console.log();
@@ -973,5 +975,53 @@ export async function runUpgrade(): Promise<void> {
     `${c.dim}Claude Code servers added with \`claude mcp add\` aren't edited here —${c.reset}`,
     `${c.dim}re-run ${c.reset}${c.cyan}npx ${NPX_SPEC} setup${c.reset}${c.dim} to refresh them.${c.reset}`,
   ], c.green));
+  console.log();
+}
+
+// ── Bug report ────────────────────────────────────────────────────────────────
+export async function runBug(): Promise<void> {
+  console.log();
+  console.log(fmt.header("  ◆ Gadget MCP — Report a bug"));
+  console.log(fmt.dim("  Opens a pre-filled GitHub issue. Nothing is sent until you submit it."));
+  console.log();
+
+  // Which editors have this server configured, and with what access (never keys or slugs)
+  const syncPath = findSyncJson(process.cwd());
+  const projectRoot = syncPath ? dirname(dirname(syncPath)) : null;
+  const configured = allConfigSources(projectRoot)
+    .flatMap(({ path, label, isClaudeUserLevel }) => scanConfigForGadget(path, label, isClaudeUserLevel))
+    .map((e) => `${e.source} (${e.environment}, ${e.access})`);
+
+  const update = await getUpdateInfo();
+  const diag = diagnostics({
+    ...(update ? { "latest on npm": `${update.latest} — this report is from an older version` } : {}),
+    ...(configured.length ? { configured: configured.join("; ") } : {}),
+  });
+
+  console.log(fmt.section("  Environment (included automatically)"));
+  console.log();
+  for (const line of diag.split("\n")) console.log(`  ${c.dim}${line}${c.reset}`);
+  console.log();
+  if (update) {
+    console.log(fmt.warn(`You're on ${update.current}; ${update.latest} is out. It may already be fixed — try ${fmt.code("npx " + PKG_NAME + "@latest upgrade")}`));
+    console.log();
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const title = (await prompt(rl, `  ${fmt.label("Short title")} ${c.dim}(e.g. count_records fails with a date filter)${c.reset}: `)).trim();
+  const whatHappened = (await prompt(rl, `  ${fmt.label("What happened?")} ${c.dim}(Enter to fill in on GitHub)${c.reset}: `)).trim();
+  rl.close();
+
+  const url = buildIssueUrl({ title: title || undefined, whatHappened: whatHappened || undefined }, diag);
+
+  console.log();
+  const opened = openInBrowser(url);
+  console.log(box([
+    `${c.bold}${opened ? "Opening GitHub in your browser…" : "Open the link below to finish your report."}${c.reset}`,
+    ...(opened ? [`${c.dim}If nothing opens, use the link below.${c.reset}`] : []),
+    `${c.dim}Add steps and error output there, then submit.${c.reset}`,
+  ], c.green));
+  console.log();
+  console.log(`  ${c.cyan}${url}${c.reset}`);
   console.log();
 }

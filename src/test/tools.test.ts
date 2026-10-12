@@ -574,6 +574,27 @@ describe("audit log", () => {
   });
 });
 
+// ── report_bug ────────────────────────────────────────────────────────────────
+describe("report_bug", () => {
+  it("returns a pre-filled issue link without calling Gadget", async () => {
+    const result = await handleTool("report_bug", {
+      title: "filter broken",
+      what_happened: "count_records errored",
+      error_output: "Error: test-key-1234 rejected",
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    const url = result.content[0].text.match(/https:\/\/github\.com\/\S+/)![0];
+    const p = new URL(url).searchParams;
+    expect(p.get("title")).toBe("[Bug]: filter broken");
+    expect(p.get("logs")).not.toContain("test-key-1234");
+    expect(p.get("diagnostics")).toContain("gadget-mcp:");
+  });
+
+  it("is always listed, even read-only", () => {
+    expect(getToolDefinitions().map((t: any) => t.name)).toContain("report_bug");
+  });
+});
+
 // ── unknown tool ──────────────────────────────────────────────────────────────
 describe("unknown tool", () => {
   it("returns isError", async () => {

@@ -109,6 +109,7 @@ Add to `~/.cursor/mcp.json`:
 | `introspect_actions` | List actions (mutations) and their arguments             |
 | `get_schema_overview` | All models and fields in one call                       |
 | `run_graphql`      | Run a raw read-only GraphQL query (mutations are blocked)  |
+| `report_bug`       | Build a pre-filled GitHub bug report link (nothing is posted) |
 
 ### Optional write tools
 
@@ -163,6 +164,18 @@ Once connected, ask Claude:
 ## Future features
 
 Planned ideas and research notes (including logs / `ggt` integration for agents) live in [FUTURE_FEATURES.md](./FUTURE_FEATURES.md).
+
+---
+
+## Reporting bugs
+
+The quickest way is:
+
+```bash
+npx @stronger-ecommerce/gadget-mcp@latest bug
+```
+
+It asks for a title and a short description, then opens a [bug report](https://github.com/Stronger-eCommerce/gadget-mcp/issues/new?template=bug_report.yml) with your version, Node, OS, environment and enabled flags already filled in. You can also ask your agent to *"report a bug with the Gadget MCP"*: the `report_bug` tool hands you the same pre-filled link. API keys and your app slug are never included, and nothing is posted until you submit the issue yourself.
 
 ---
 
