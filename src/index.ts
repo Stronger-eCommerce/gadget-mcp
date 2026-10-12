@@ -34,6 +34,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { handleTool, getToolDefinitions } from "./tools.js";
 import { checkForUpdate, currentVersion, updateNoticeForAgent } from "./update.js";
+import { setClientInfo } from "./report.js";
 
 const GADGET_APP = process.env.GADGET_APP;
 const GADGET_API_KEY = process.env.GADGET_API_KEY;
@@ -68,6 +69,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 checkForUpdate().then((info) => {
   if (info) pendingUpdateNotice = updateNoticeForAgent(info);
 });
+
+// Lets report_bug include which editor/client the user is on
+server.oninitialized = () => setClientInfo(server.getClientVersion());
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

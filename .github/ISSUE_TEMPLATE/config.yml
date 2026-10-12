@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 README & setup guide
+    url: https://github.com/Stronger-eCommerce/gadget-mcp#readme
+    about: Setup, environment variables, and the full tool list.
+  - name: 🔧 Gadget platform issues
+    url: https://gadget.dev
+    about: Problems with Gadget itself (not this MCP server) belong with Gadget support.

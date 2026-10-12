@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
+import { buildIssueUrl } from "./report.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const GADGET_APP = process.env.GADGET_APP;
@@ -637,6 +638,21 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         return runMutation(action, actionArgs, `success ${ERRORS_SELECTION} ${fields}`, dry_run);
       }
 
+      case "report_bug": {
+        const { title, what_happened, expected, steps, error_output } = args as {
+          title: string; what_happened: string; expected?: string; steps?: string; error_output?: string;
+        };
+        const url = buildIssueUrl({ title, whatHappened: what_happened, expected, steps, logs: error_output });
+        return {
+          content: [{
+            type: "text",
+            text:
+              `Pre-filled bug report link (nothing has been submitted). Give this link to the user so they can review and submit it:\n\n${url}\n\n` +
+              `Version, Node, OS and enabled flags are included; API keys and the app slug are not.`,
+          }],
+        };
+      }
+
       default:
         return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     }
@@ -745,6 +761,22 @@ export const TOOL_DEFINITIONS = [
     description:
       "Return all models with their fields and types in a single call. Use this for a broad understanding of the app schema before diving into specific models.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "report_bug",
+    description:
+      "Create a pre-filled GitHub bug report link for this MCP server (gadget-mcp itself, not the user's Gadget app). Use when a gadget-mcp tool misbehaves or the user asks to report a bug. Returns a link for the user to review and submit — nothing is posted automatically. Do not include API keys or customer data.",
+    inputSchema: {
+      type: "object",
+      required: ["title", "what_happened"],
+      properties: {
+        title: { type: "string", description: "Short summary, e.g. \"count_records fails with sort on shopifyOrder\"" },
+        what_happened: { type: "string", description: "What went wrong" },
+        expected: { type: "string", description: "What should have happened" },
+        steps: { type: "string", description: "Steps to reproduce, including the tool called and its arguments" },
+        error_output: { type: "string", description: "Exact error text or tool output" },
+      },
+    },
   },
   {
     name: "run_graphql",

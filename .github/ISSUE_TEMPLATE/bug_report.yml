@@ -1,0 +1,103 @@
+name: 🐛 Bug report
+description: Something isn't working as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this! 🙏
+
+        **Fastest way:** run `npx @stronger-ecommerce/gadget-mcp@latest bug` — it opens this form with your version, Node, OS and setup already filled in.
+        Or ask your agent to *"report a bug with the Gadget MCP"* and it will hand you a pre-filled link.
+
+        ⚠️ Never paste your `GADGET_API_KEY` (`gsk-…`) or customer data here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: query_records returned an error when filtering shopifyOrder by createdAt…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The tool you called and the arguments you passed help most.
+      placeholder: |
+        1. Ask Claude to "count orders created this week"
+        2. It calls count_records with { "model": "shopifyOrder", "filter": [...] }
+        3. See error
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: Paste any error message or tool output. This is rendered as code automatically.
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part is affected?
+      options:
+        - Read tools (query_records, get_record, count_records, …)
+        - Write tools (create/update/delete_record, run_action)
+        - Introspection (introspect_*, get_schema_overview, list_models)
+        - run_graphql
+        - setup / verify / list / uninstall / upgrade CLI
+        - Update prompt
+        - Other / not sure
+    validations:
+      required: false
+
+  - type: dropdown
+    id: editor
+    attributes:
+      label: Editor / client
+      options:
+        - Claude Code
+        - Claude Desktop
+        - Cursor
+        - VS Code
+        - Windsurf
+        - Other
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Environment
+      description: Filled in automatically by `gadget-mcp bug`. Otherwise, add the output of `npx @stronger-ecommerce/gadget-mcp --version` and `node --version`.
+      render: text
+      placeholder: |
+        gadget-mcp: 1.2.0
+        node: v22.11.0
+        os: darwin arm64
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I'm on the latest version (`npx @stronger-ecommerce/gadget-mcp@latest upgrade`), or this happens on the latest too
+          required: false
+        - label: I removed API keys and any sensitive data from this report
+          required: true
