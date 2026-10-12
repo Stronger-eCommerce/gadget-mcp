@@ -1,6 +1,6 @@
 # @stronger-ecommerce/gadget-mcp
 
-Generic read-only MCP server for any [Gadget](https://gadget.dev) app.
+Generic MCP server for any [Gadget](https://gadget.dev) app — read-only by default, with optional write and delete tools.
 Query any model via GraphQL introspection — no generated client required.
 
 Built by [Stronger eCommerce](https://strongerecommerce.com).
@@ -89,6 +89,8 @@ Add to `~/.cursor/mcp.json`:
 | `GADGET_APP`         | Yes      | —            | App slug, e.g. `my-app`              |
 | `GADGET_API_KEY`     | Yes      | —            | Production API key                   |
 | `GADGET_ENVIRONMENT` | No       | `production` | `production` or `development`        |
+| `GADGET_ALLOW_WRITES`  | No     | off          | `true` enables `create_record`, `update_record`, `run_action` |
+| `GADGET_ALLOW_DELETES` | No     | off          | `true` enables `delete_record` (and delete actions via `run_action`) |
 
 ---
 
@@ -100,7 +102,33 @@ Add to `~/.cursor/mcp.json`:
 | `introspect_model` | Show fields and types for a model                          |
 | `query_records`    | Query any model with filters and field selection           |
 | `get_record`       | Fetch a single record by ID                                |
+| `count_records`    | Count records, optionally filtered                         |
+| `introspect_filters` | Show filter fields for a model                           |
+| `introspect_actions` | List actions (mutations) and their arguments             |
+| `get_schema_overview` | All models and fields in one call                       |
 | `run_graphql`      | Run a raw read-only GraphQL query (mutations are blocked)  |
+
+### Optional write tools
+
+Off by default. Tools are only listed to the client when their flag is set, and the server refuses them otherwise.
+
+| Tool            | Flag                   | Description                                                    |
+|-----------------|------------------------|----------------------------------------------------------------|
+| `create_record` | `GADGET_ALLOW_WRITES`  | Run a model's `create` action                                  |
+| `update_record` | `GADGET_ALLOW_WRITES`  | Run a model's `update` action                                  |
+| `run_action`    | `GADGET_ALLOW_WRITES`  | Run any model or global action by name (e.g. `publishBlogPost`) |
+| `delete_record` | `GADGET_ALLOW_DELETES` | Run a model's `delete` action                                  |
+
+Writes go through your Gadget actions, so validations and action code run as normal. The API key's role also needs the matching action permissions — the `setup` wizard asks whether to enable writes/deletes and can create a `gadget-mcp-write` role with them.
+
+```bash
+claude mcp add my-app-gadget \
+  -e GADGET_APP=my-app \
+  -e GADGET_API_KEY=your_key_here \
+  -e GADGET_ALLOW_WRITES=true \
+  -e GADGET_ALLOW_DELETES=true \
+  -- npx @stronger-ecommerce/gadget-mcp
+```
 
 ---
 

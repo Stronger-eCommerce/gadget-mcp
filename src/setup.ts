@@ -119,7 +119,19 @@ interface McpEntry {
   env: Record<string, string>;
 }
 
-function mcpEntry(appSlug: string, apiKey: string, environment: string): McpEntry {
+interface Access {
+  writes: boolean;
+  deletes: boolean;
+}
+
+function accessEnv(access: Access): Record<string, string> {
+  return {
+    ...(access.writes ? { GADGET_ALLOW_WRITES: "true" } : {}),
+    ...(access.deletes ? { GADGET_ALLOW_DELETES: "true" } : {}),
+  };
+}
+
+function mcpEntry(appSlug: string, apiKey: string, environment: string, access: Access): McpEntry {
   return {
     command: "npx",
     args: ["@stronger-ecommerce/gadget-mcp"],
@@ -127,6 +139,7 @@ function mcpEntry(appSlug: string, apiKey: string, environment: string): McpEntr
       GADGET_APP: appSlug,
       GADGET_API_KEY: apiKey,
       ...(environment !== "production" ? { GADGET_ENVIRONMENT: environment } : {}),
+      ...accessEnv(access),
     },
   };
 }
@@ -164,6 +177,9 @@ const TOOLS: Tool[] = [
         `-e GADGET_APP=${appSlug}`,
         ...(environment !== "production" ? [`-e GADGET_ENVIRONMENT=${environment}`] : []),
         `-e GADGET_API_KEY=${apiKey}`,
+        ...Object.entries(entry.env)
+          .filter(([k]) => k.startsWith("GADGET_ALLOW_"))
+          .map(([k, v]) => `-e ${k}=${v}`),
       ].join(" ");
       const scopeFlag = scope === "project" ? " -s project" : "";
       const cmd = `claude mcp add${scopeFlag} ${serverName} ${envFlags} -- npx @stronger-ecommerce/gadget-mcp`;
@@ -222,6 +238,7 @@ interface FoundEntry {
   app: string;
   environment: string;
   keyPreview: string;
+  access: string;
   isClaudeUserLevel: boolean;
 }
 
@@ -239,6 +256,11 @@ function scanConfigForGadget(filePath: string, sourceLabel: string, isClaudeUser
         app: entry.env?.GADGET_APP ?? "?",
         environment: entry.env?.GADGET_ENVIRONMENT ?? "production",
         keyPreview: entry.env?.GADGET_API_KEY ? mask(entry.env.GADGET_API_KEY) : `${c.yellow}(no key)${c.reset}`,
+        access: [
+          "read",
+          ...(entry.env?.GADGET_ALLOW_WRITES === "true" ? ["write"] : []),
+          ...(entry.env?.GADGET_ALLOW_DELETES === "true" ? ["delete"] : []),
+        ].join("+"),
         isClaudeUserLevel,
       }));
   } catch {
@@ -277,6 +299,19 @@ function permissionsUrl(app: string, env: string): string {
 
 // ── Permissions file helpers ───────────────────────────────────────────────────
 const MCP_ROLE = "gadget-mcp-read";
+
+function roleForAccess(access: Access): string {
+  if (access.writes || access.deletes) return "gadget-mcp-write";
+  return MCP_ROLE;
+}
+
+function modelPermissionLabel(access: Access): string {
+  const actions = [
+    ...(access.writes ? ["create", "update"] : []),
+    ...(access.deletes ? ["delete"] : []),
+  ];
+  return actions.length ? `read + ${actions.join("/")}` : "read";
+}
 
 function permissionsFilePath(syncPath: string): string | null {
   try {
@@ -329,10 +364,15 @@ function extractModels(permFile: string): string[] {
   return [...models].sort();
 }
 
-function buildRoleEntry(roleName: string, models: string[]): string {
+function buildRoleEntry(roleName: string, models: string[], access: Access = { writes: false, deletes: false }): string {
   const pad = "    ";
+  const actions = [
+    ...(access.writes ? ["create: true", "update: true"] : []),
+    ...(access.deletes ? ["delete: true"] : []),
+  ];
+  const actionsLine = actions.length ? `\n${pad}      actions: { ${actions.join(", ")} },` : "";
   const modelLines = models
-    .map(m => `${pad}    ${m}: {\n${pad}      read: true,\n${pad}    },`)
+    .map(m => `${pad}    ${m}: {\n${pad}      read: true,${actionsLine}\n${pad}    },`)
     .join("\n");
   return [
     `${pad}"${roleName}": {`,
@@ -344,7 +384,7 @@ function buildRoleEntry(roleName: string, models: string[]): string {
   ].join("\n");
 }
 
-function injectRole(content: string, roleName: string, models: string[]): string {
+function injectRole(content: string, roleName: string, models: string[], access?: Access): string {
   const rolesIdx = content.indexOf("roles: {");
   if (rolesIdx === -1) throw new Error("Could not find roles: { in permissions file");
   const open = content.indexOf("{", rolesIdx);
@@ -354,7 +394,7 @@ function injectRole(content: string, roleName: string, models: string[]): string
     else if (content[i] === "}") { depth--; if (depth === 0) { closing = i; break; } }
   }
   if (closing === -1) throw new Error("Could not find closing brace of roles");
-  const entry = buildRoleEntry(roleName, models);
+  const entry = buildRoleEntry(roleName, models, access);
   return content.slice(0, closing) + entry + "\n  " + content.slice(closing);
 }
 
@@ -421,35 +461,55 @@ export async function runSetup(): Promise<void> {
   const envInput = await prompt(rl, `  ${fmt.label("Environment")} ${c.dim}[production]${c.reset}: `);
   if (envInput.trim()) environment = envInput.trim();
 
+  // 3b. Optional write / delete access
+  console.log();
+  console.log(fmt.info("By default the MCP server is read-only."));
+  const writesInput = await prompt(
+    rl,
+    `  Enable ${c.bold}write${c.reset} tools (create/update/run actions)? ${c.dim}[y/N]${c.reset}: `
+  );
+  const deletesInput = await prompt(
+    rl,
+    `  Enable ${c.bold}delete${c.reset} tools? ${c.dim}[y/N]${c.reset}: `
+  );
+  const access: Access = {
+    writes: writesInput.trim().toLowerCase().startsWith("y"),
+    deletes: deletesInput.trim().toLowerCase().startsWith("y"),
+  };
+  if (access.writes || access.deletes) {
+    console.log(fmt.warn(`The agent will be able to ${c.bold}change${access.deletes ? " and delete" : ""}${c.reset} data in ${c.bold}${environment}${c.reset}.`));
+  }
+
   // 4. Role setup
   console.log();
   const permFile = syncPath ? permissionsFilePath(syncPath) : null;
-  let roleToUse = MCP_ROLE;
+  const defaultRole = roleForAccess(access);
+  let roleToUse = defaultRole;
 
   if (!permFile) {
     console.log(fmt.info("No local permissions.gadget.ts found."));
-    console.log(fmt.info(`Create a read-only role manually at: ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`));
+    console.log(fmt.info(`Create a role with ${modelPermissionLabel(access)} permissions manually at: ${c.cyan}${permissionsUrl(appSlug, "development")}${c.reset}`));
     console.log();
     const roleInput = await prompt(
       rl,
-      `  Role name ${c.dim}[${MCP_ROLE}]${c.reset} ${c.dim}(or type an existing role to use)${c.reset}: `
+      `  Role name ${c.dim}[${defaultRole}]${c.reset} ${c.dim}(or type an existing role to use)${c.reset}: `
     );
-    roleToUse = roleInput.trim() || MCP_ROLE;
+    roleToUse = roleInput.trim() || defaultRole;
     console.log();
   } else {
     const permContent = readFileSync(permFile, "utf8");
 
-    if (roleExistsInContent(permContent, MCP_ROLE)) {
-      console.log(fmt.success(`Role ${fmt.label(MCP_ROLE)} already exists in permissions.gadget.ts`));
+    if (roleExistsInContent(permContent, defaultRole)) {
+      console.log(fmt.success(`Role ${fmt.label(defaultRole)} already exists in permissions.gadget.ts`));
     } else {
-      console.log(fmt.warn(`Role ${fmt.label(MCP_ROLE)} not found in permissions.gadget.ts`));
+      console.log(fmt.warn(`Role ${fmt.label(defaultRole)} not found in permissions.gadget.ts`));
       console.log();
 
       const roleInput = await prompt(
         rl,
-        `  Role name ${c.dim}[${MCP_ROLE}]${c.reset} ${c.dim}(Enter to create, or type an existing role name to skip)${c.reset}: `
+        `  Role name ${c.dim}[${defaultRole}]${c.reset} ${c.dim}(Enter to create, or type an existing role name to skip)${c.reset}: `
       );
-      roleToUse = roleInput.trim() || MCP_ROLE;
+      roleToUse = roleInput.trim() || defaultRole;
 
       if (roleExistsInContent(permContent, roleToUse)) {
         console.log();
@@ -461,12 +521,12 @@ export async function runSetup(): Promise<void> {
 
         const confirmInput = await prompt(
           rl,
-          `  Add role ${c.bold}${c.white}${roleToUse}${c.reset} with ${c.bold}read: true${c.reset} for all ${models.length} models? ${c.dim}[Y/n]${c.reset}: `
+          `  Add role ${c.bold}${c.white}${roleToUse}${c.reset} with ${c.bold}${modelPermissionLabel(access)}${c.reset} for all ${models.length} models? ${c.dim}[Y/n]${c.reset}: `
         );
 
         if (confirmInput.trim().toLowerCase() !== "n") {
           try {
-            const updated = injectRole(permContent, roleToUse, models);
+            const updated = injectRole(permContent, roleToUse, models, access);
             writeFileSync(permFile, updated, "utf8");
             console.log();
             console.log(fmt.success(`Written to ${permFile}`));
@@ -597,7 +657,7 @@ export async function runSetup(): Promise<void> {
 
   // 10. Install
   console.log();
-  const entry = mcpEntry(appSlug, trimmedKey, environment);
+  const entry = mcpEntry(appSlug, trimmedKey, environment, access);
 
   for (const tool of selected) {
     process.stdout.write(`  Installing for ${c.bold}${tool.label}${c.reset}… `);
@@ -618,7 +678,7 @@ export function runHelp(): void {
   const w = 60;
   console.log();
   console.log(fmt.header("  ◆ Gadget MCP"));
-  console.log(fmt.dim("  Generic read-only MCP server for any Gadget app"));
+  console.log(fmt.dim("  Generic MCP server for any Gadget app (read-only by default)"));
   console.log(fmt.dim("  by Stronger eCommerce · strongerecommerce.com"));
   console.log();
   console.log(fmt.section("  Commands", w));
@@ -635,6 +695,8 @@ export function runHelp(): void {
   console.log(`  ${fmt.label("GADGET_APP")}          ${c.dim}Required. App slug, e.g. "my-app"${c.reset}`);
   console.log(`  ${fmt.label("GADGET_API_KEY")}      ${c.dim}Required. API key from <app>.gadget.app/edit/settings/api-keys${c.reset}`);
   console.log(`  ${fmt.label("GADGET_ENVIRONMENT")}  ${c.dim}Optional. "production" (default) | "development"${c.reset}`);
+  console.log(`  ${fmt.label("GADGET_ALLOW_WRITES")} ${c.dim}Optional. "true" enables create_record, update_record, run_action${c.reset}`);
+  console.log(`  ${fmt.label("GADGET_ALLOW_DELETES")}${c.dim}Optional. "true" enables delete_record${c.reset}`);
   console.log();
   console.log(fmt.section("  Quick start", w));
   console.log();
@@ -742,7 +804,7 @@ export function runList(): void {
     console.log(`${c.bold} ${label}${c.reset}  ${c.dim}${filePath}${c.reset}`);
     for (const e of entries) {
       console.log(`  ${c.cyan}${e.name}${c.reset}`);
-      console.log(`    App: ${c.bold}${e.app}${c.reset}   Env: ${c.dim}${e.environment}${c.reset}   Key: ${c.dim}${e.keyPreview}${c.reset}`);
+      console.log(`    App: ${c.bold}${e.app}${c.reset}   Env: ${c.dim}${e.environment}${c.reset}   Key: ${c.dim}${e.keyPreview}${c.reset}   Access: ${c.dim}${e.access}${c.reset}`);
     }
     console.log();
   }
