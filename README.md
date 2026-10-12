@@ -36,7 +36,7 @@ Go to `https://<your-app>.gadget.app/edit/settings/api-keys` and create a key wi
 claude mcp add my-app-gadget \
   -e GADGET_APP=my-app \
   -e GADGET_API_KEY=your_key_here \
-  -- npx @stronger-ecommerce/gadget-mcp
+  -- npx @stronger-ecommerce/gadget-mcp@latest
 ```
 
 Register multiple apps under different names:
@@ -45,12 +45,12 @@ Register multiple apps under different names:
 claude mcp add app-one-gadget \
   -e GADGET_APP=my-first-app \
   -e GADGET_API_KEY=key1 \
-  -- npx @stronger-ecommerce/gadget-mcp
+  -- npx @stronger-ecommerce/gadget-mcp@latest
 
 claude mcp add app-two-gadget \
   -e GADGET_APP=my-second-app \
   -e GADGET_API_KEY=key2 \
-  -- npx @stronger-ecommerce/gadget-mcp
+  -- npx @stronger-ecommerce/gadget-mcp@latest
 ```
 
 ### 3. Register in Cursor
@@ -62,7 +62,7 @@ Add to `~/.cursor/mcp.json`:
   "mcpServers": {
     "app-one-gadget": {
       "command": "npx",
-      "args": ["@stronger-ecommerce/gadget-mcp"],
+      "args": ["@stronger-ecommerce/gadget-mcp@latest"],
       "env": {
         "GADGET_APP": "my-first-app",
         "GADGET_API_KEY": "key1"
@@ -70,7 +70,7 @@ Add to `~/.cursor/mcp.json`:
     },
     "app-two-gadget": {
       "command": "npx",
-      "args": ["@stronger-ecommerce/gadget-mcp"],
+      "args": ["@stronger-ecommerce/gadget-mcp@latest"],
       "env": {
         "GADGET_APP": "my-second-app",
         "GADGET_API_KEY": "key2"
@@ -91,6 +91,8 @@ Add to `~/.cursor/mcp.json`:
 | `GADGET_ENVIRONMENT` | No       | `production` | `production` or `development`        |
 | `GADGET_ALLOW_WRITES`  | No     | off          | `true` enables `create_record`, `update_record`, `run_action` |
 | `GADGET_ALLOW_DELETES` | No     | off          | `true` enables `delete_record` (and delete actions via `run_action`) |
+| `GADGET_AUDIT_LOG`     | No     | —            | Path to a JSONL file; every executed write is appended to it |
+| `GADGET_MCP_NO_UPDATE_CHECK` | No | —          | Set to disable the daily npm update check |
 
 ---
 
@@ -119,6 +121,10 @@ Off by default. Tools are only listed to the client when their flag is set, and 
 | `run_action`    | `GADGET_ALLOW_WRITES`  | Run any model or global action by name (e.g. `publishBlogPost`) |
 | `delete_record` | `GADGET_ALLOW_DELETES` | Run a model's `delete` action                                  |
 
+Every write tool takes `dry_run: true`, which checks the action and arguments against the schema and returns the exact mutation and variables without changing anything — handy for asking the agent to "show me what you'd do first".
+
+Set `GADGET_AUDIT_LOG=~/gadget-mcp-audit.jsonl` to keep a local record of every write (timestamp, app, environment, action, variables, success/errors).
+
 Writes go through your Gadget actions, so validations and action code run as normal. The API key's role also needs the matching action permissions — the `setup` wizard asks whether to enable writes/deletes and can create a `gadget-mcp-write` role with them.
 
 ```bash
@@ -127,8 +133,20 @@ claude mcp add my-app-gadget \
   -e GADGET_API_KEY=your_key_here \
   -e GADGET_ALLOW_WRITES=true \
   -e GADGET_ALLOW_DELETES=true \
-  -- npx @stronger-ecommerce/gadget-mcp
+  -- npx @stronger-ecommerce/gadget-mcp@latest
 ```
+
+---
+
+## Staying up to date
+
+The server checks npm at most once a day. When a new version is out it prints an update box in your terminal and adds a one-time note to the agent's next tool result, so the agent can let you know too. To upgrade:
+
+```bash
+npx @stronger-ecommerce/gadget-mcp@latest upgrade
+```
+
+`upgrade` shows what changed, updates a global npm install if you have one, and switches editor configs from a cached `npx @stronger-ecommerce/gadget-mcp` to `@latest` so they always start the newest version. New installs from `setup` use `@latest` already.
 
 ---
 

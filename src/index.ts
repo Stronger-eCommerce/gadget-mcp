@@ -11,16 +11,17 @@
  *   GADGET_ENVIRONMENT   "production" (default) | "development"
  *   GADGET_ALLOW_WRITES  "true" to enable create_record, update_record, run_action
  *   GADGET_ALLOW_DELETES "true" to enable delete_record (and delete actions via run_action)
+ *   GADGET_AUDIT_LOG     JSONL file path; every executed write is appended to it
  *
  * ── REGISTER IN CLAUDE CODE ─────────────────────────────────────────────────
  *   claude mcp add my-app-gadget \
  *     -e GADGET_APP=my-app \
  *     -e GADGET_API_KEY=your_key \
- *     -- npx @stronger-ecommerce/gadget-mcp
+ *     -- npx @stronger-ecommerce/gadget-mcp@latest
  *
  * ── REGISTER IN CURSOR (~/.cursor/mcp.json) ─────────────────────────────────
  *   { "mcpServers": { "my-app-gadget": { "command": "npx",
- *     "args": ["@stronger-ecommerce/gadget-mcp"],
+ *     "args": ["@stronger-ecommerce/gadget-mcp@latest"],
  *     "env": { "GADGET_APP": "my-app", "GADGET_API_KEY": "your_key" } } } }
  * ────────────────────────────────────────────────────────────────────────────
  */
@@ -32,7 +33,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { handleTool, getToolDefinitions } from "./tools.js";
-import { checkForUpdate } from "./setup.js";
+import { checkForUpdate, currentVersion, updateNoticeForAgent } from "./update.js";
 
 const GADGET_APP = process.env.GADGET_APP;
 const GADGET_API_KEY = process.env.GADGET_API_KEY;
@@ -43,18 +44,30 @@ if (!GADGET_APP || !GADGET_API_KEY) {
 }
 
 const server = new Server(
-  { name: `${GADGET_APP}-gadget`, version: "1.0.0" },
+  { name: `${GADGET_APP}-gadget`, version: currentVersion() },
   { capabilities: { tools: {} } }
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: getToolDefinitions() }));
 
+// Update notice for the agent — appended to the first tool result after an update is found,
+// since stderr is rarely visible to users when the server runs inside an editor.
+let pendingUpdateNotice: string | null = null;
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  return handleTool(name, (args ?? {}) as Record<string, any>);
+  const result = await handleTool(name, (args ?? {}) as Record<string, any>);
+  if (pendingUpdateNotice) {
+    result.content.push({ type: "text", text: pendingUpdateNotice });
+    pendingUpdateNotice = null;
+  }
+  return result;
 });
 
-checkForUpdate(); // fire-and-forget; prints to stderr so MCP stdio is unaffected
+// fire-and-forget; prints to stderr so MCP stdio is unaffected
+checkForUpdate().then((info) => {
+  if (info) pendingUpdateNotice = updateNoticeForAgent(info);
+});
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

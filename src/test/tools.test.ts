@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, readFileSync, existsSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
 // ── Mock fetch before importing the module under test ─────────────────────────
 const mockFetch = vi.fn();
@@ -31,6 +34,7 @@ beforeEach(() => {
   _resetCaches();
   delete process.env.GADGET_ALLOW_WRITES;
   delete process.env.GADGET_ALLOW_DELETES;
+  delete process.env.GADGET_AUDIT_LOG;
 });
 
 // ── gql helper ────────────────────────────────────────────────────────────────
@@ -516,6 +520,57 @@ describe("run_action", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("GADGET_ALLOW_DELETES");
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("dry_run", () => {
+  it("validates and previews the mutation without executing it", async () => {
+    process.env.GADGET_ALLOW_DELETES = "true";
+    mockGql(mutationIntrospection);
+    const result = await handleTool("delete_record", { model: "label", id: "7", dry_run: true });
+    expect(mockFetch).toHaveBeenCalledTimes(1); // introspection only
+    const preview = JSON.parse(result.content[0].text);
+    expect(preview.dryRun).toBe(true);
+    expect(preview.action).toBe("deleteLabel");
+    expect(preview.variables).toEqual({ id: "7" });
+    expect(preview.query).toContain("deleteLabel(id: $id)");
+  });
+
+  it("still reports unknown actions", async () => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    const result = await handleTool("run_action", { action: "nope", dry_run: true });
+    expect(result.isError).toBe(true);
+  });
+});
+
+describe("audit log", () => {
+  const logFile = () => join(mkdtempSync(join(tmpdir(), "gadget-mcp-")), "nested", "audit.jsonl");
+
+  it("appends a JSON line for each executed write", async () => {
+    const file = logFile();
+    process.env.GADGET_AUDIT_LOG = file;
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    mockGql({ updateLabel: { success: true, errors: null, label: { id: "7" } } });
+    mockGql({ updateLabel: { success: false, errors: [{ message: "bad", code: "X" }], label: null } });
+    await handleTool("update_record", { model: "label", id: "7", data: { name: "Gold" } });
+    await handleTool("update_record", { model: "label", id: "7", data: { name: "" } });
+
+    const lines = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatchObject({ app: "test-app", action: "updateLabel", success: true, variables: { id: "7", label: { name: "Gold" } } });
+    expect(lines[1]).toMatchObject({ success: false, errors: [{ message: "bad" }] });
+    expect(lines[0].ts).toBeDefined();
+  });
+
+  it("does not log dry runs", async () => {
+    const file = logFile();
+    process.env.GADGET_AUDIT_LOG = file;
+    process.env.GADGET_ALLOW_WRITES = "true";
+    mockGql(mutationIntrospection);
+    await handleTool("create_record", { model: "label", data: { name: "x" }, dry_run: true });
+    expect(existsSync(file)).toBe(false);
   });
 });
 

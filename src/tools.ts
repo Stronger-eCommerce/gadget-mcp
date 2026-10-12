@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
+
 // ── Config ────────────────────────────────────────────────────────────────────
 const GADGET_APP = process.env.GADGET_APP;
 const GADGET_API_KEY = process.env.GADGET_API_KEY;
@@ -161,6 +164,22 @@ async function resolveMutation(name: string): Promise<ResolvedMutation | null> {
   };
 }
 
+/** Append one JSON line per executed write to GADGET_AUDIT_LOG, if set. Never fails the write. */
+function auditLog(entry: Record<string, unknown>): void {
+  const file = process.env.GADGET_AUDIT_LOG;
+  if (!file) return;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    appendFileSync(
+      file,
+      JSON.stringify({ ts: new Date().toISOString(), app: GADGET_APP, environment: GADGET_ENVIRONMENT, ...entry }) + "\n",
+      "utf8"
+    );
+  } catch (err: any) {
+    console.error(`gadget-mcp: could not write audit log ${file}: ${err?.message ?? String(err)}`);
+  }
+}
+
 const ERRORS_SELECTION = `errors { message code ... on InvalidRecordError { validationErrors { apiIdentifier message } } }`;
 
 function isDeleteAction(name: string): boolean {
@@ -174,7 +193,8 @@ function isDeleteAction(name: string): boolean {
 async function runMutation(
   action: string,
   args: Record<string, unknown>,
-  selection: string
+  selection: string,
+  dryRun = false
 ): Promise<{ content: { type: string; text: string }[]; isError?: boolean }> {
   const resolved = await resolveMutation(action);
   if (!resolved) {
@@ -207,8 +227,33 @@ async function runMutation(
     }
   `;
 
-  const data = await gql(query, used.length ? args : undefined);
-  const result = data[action];
+  const variables = used.length ? args : undefined;
+
+  if (dryRun) {
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          dryRun: true,
+          message: "Nothing was changed. Re-run without dry_run to execute.",
+          action,
+          variables: variables ?? {},
+          query: query.replace(/\n\s+/g, " ").trim(),
+        }, null, 2),
+      }],
+    };
+  }
+
+  let result: any;
+  try {
+    const data = await gql(query, variables);
+    result = data[action];
+  } catch (err: any) {
+    auditLog({ action, variables, success: false, error: err?.message ?? String(err) });
+    throw err;
+  }
+  auditLog({ action, variables, success: result?.success !== false, errors: result?.errors ?? undefined });
+
   return {
     content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     ...(result?.success === false ? { isError: true } : {}),
@@ -551,41 +596,45 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
 
       case "create_record": {
         if (!writesEnabled()) return { content: [{ type: "text", text: WRITES_DISABLED_MSG }], isError: true };
-        const { model, data, fields = "id" } = args as { model: string; data: Record<string, unknown>; fields?: string };
+        const { model, data, fields = "id", dry_run } = args as {
+          model: string; data: Record<string, unknown>; fields?: string; dry_run?: boolean;
+        };
         return runMutation(
           `create${capitalize(model)}`,
           { [model]: data },
-          `success ${ERRORS_SELECTION} ${model} { ${fields} }`
+          `success ${ERRORS_SELECTION} ${model} { ${fields} }`,
+          dry_run
         );
       }
 
       case "update_record": {
         if (!writesEnabled()) return { content: [{ type: "text", text: WRITES_DISABLED_MSG }], isError: true };
-        const { model, id, data, fields = "id" } = args as {
-          model: string; id: string; data: Record<string, unknown>; fields?: string;
+        const { model, id, data, fields = "id", dry_run } = args as {
+          model: string; id: string; data: Record<string, unknown>; fields?: string; dry_run?: boolean;
         };
         return runMutation(
           `update${capitalize(model)}`,
           { id, [model]: data },
-          `success ${ERRORS_SELECTION} ${model} { ${fields} }`
+          `success ${ERRORS_SELECTION} ${model} { ${fields} }`,
+          dry_run
         );
       }
 
       case "delete_record": {
         if (!deletesEnabled()) return { content: [{ type: "text", text: DELETES_DISABLED_MSG }], isError: true };
-        const { model, id } = args as { model: string; id: string };
-        return runMutation(`delete${capitalize(model)}`, { id }, `success ${ERRORS_SELECTION}`);
+        const { model, id, dry_run } = args as { model: string; id: string; dry_run?: boolean };
+        return runMutation(`delete${capitalize(model)}`, { id }, `success ${ERRORS_SELECTION}`, dry_run);
       }
 
       case "run_action": {
         if (!writesEnabled()) return { content: [{ type: "text", text: WRITES_DISABLED_MSG }], isError: true };
-        const { action, args: actionArgs = {}, fields = "" } = args as {
-          action: string; args?: Record<string, unknown>; fields?: string;
+        const { action, args: actionArgs = {}, fields = "", dry_run } = args as {
+          action: string; args?: Record<string, unknown>; fields?: string; dry_run?: boolean;
         };
         if (isDeleteAction(action) && !deletesEnabled()) {
           return { content: [{ type: "text", text: DELETES_DISABLED_MSG }], isError: true };
         }
-        return runMutation(action, actionArgs, `success ${ERRORS_SELECTION} ${fields}`);
+        return runMutation(action, actionArgs, `success ${ERRORS_SELECTION} ${fields}`, dry_run);
       }
 
       default:
@@ -724,6 +773,7 @@ const WRITE_TOOL_DEFINITIONS = [
         model: { type: "string", description: "Model name in singular camelCase, e.g. label, shopifyOrder" },
         data: { type: "object", description: "Field values for the new record, e.g. { \"name\": \"VIP\" }" },
         fields: { type: "string", description: "GraphQL field selection to return for the created record (default \"id\")" },
+        dry_run: { type: "boolean", description: "Validate the action and arguments and return the mutation that would run, without changing anything" },
       },
     },
   },
@@ -739,6 +789,7 @@ const WRITE_TOOL_DEFINITIONS = [
         id: { type: "string", description: "Record ID" },
         data: { type: "object", description: "Field values to change, e.g. { \"name\": \"VIP\" }" },
         fields: { type: "string", description: "GraphQL field selection to return for the updated record (default \"id\")" },
+        dry_run: { type: "boolean", description: "Validate the action and arguments and return the mutation that would run, without changing anything" },
       },
     },
   },
@@ -756,6 +807,7 @@ const WRITE_TOOL_DEFINITIONS = [
           type: "string",
           description: "Extra selection on the action result, e.g. \"blogPost { id title }\" for model actions or \"result\" for global actions",
         },
+        dry_run: { type: "boolean", description: "Validate the action and arguments and return the mutation that would run, without changing anything" },
       },
     },
   },
@@ -771,6 +823,7 @@ const DELETE_TOOL_DEFINITIONS = [
       properties: {
         model: { type: "string", description: "Model name in singular camelCase, e.g. label, shopifyOrder" },
         id: { type: "string", description: "Record ID" },
+        dry_run: { type: "boolean", description: "Validate the action and arguments and return the mutation that would run, without changing anything" },
       },
     },
   },
