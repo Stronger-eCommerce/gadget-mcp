@@ -197,6 +197,10 @@ npm run build
 npm test
 ```
 
+### Releasing (maintainers)
+
+Go to **Actions → Release → Run workflow**, pick `patch`, `minor` or `major`, and run it. This works from the GitHub mobile app too. The workflow tests, bumps the version, tags, publishes to npm with provenance, and creates the GitHub Release with generated notes. Pick `none` to publish the version already in `package.json`.
+
 ---
 
 ## About

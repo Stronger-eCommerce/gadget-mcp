@@ -1,0 +1,105 @@
+name: Release
+
+# One-tap release: Actions → Release → Run workflow (works from the GitHub mobile app).
+# Bumps the version, tags, publishes to npm and creates the GitHub Release with notes.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump"
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+          - none (publish the version already in package.json)
+
+concurrency: release
+
+permissions:
+  contents: write  # push the release commit, tag and GitHub Release
+  id-token: write  # npm --provenance signing
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Bump version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          case "$BUMP" in
+            patch|minor|major) npm version "$BUMP" --no-git-tag-version ;;
+            *) echo "Publishing the current version without a bump" ;;
+          esac
+          echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+
+      - name: Make sure this version isn't on npm yet
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "@stronger-ecommerce/gadget-mcp@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::$VERSION is already published on npm. Pick patch/minor/major to release a new version."
+            exit 1
+          fi
+
+      - name: Commit and tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git commit -am "chore: release $VERSION"
+            git push origin HEAD:main
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "Tag v$VERSION already exists — reusing it"
+          else
+            git tag "v$VERSION"
+            git push origin "v$VERSION"
+          fi
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "GitHub Release v$VERSION already exists"
+          else
+            gh release create "v$VERSION" --title "v$VERSION" --generate-notes --latest
+          fi
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "## 🚀 Released v$VERSION"
+            echo ""
+            echo "- npm: https://www.npmjs.com/package/@stronger-ecommerce/gadget-mcp/v/$VERSION"
+            echo "- GitHub: https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
+          } >> "$GITHUB_STEP_SUMMARY"
