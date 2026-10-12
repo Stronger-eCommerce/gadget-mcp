@@ -2,8 +2,10 @@ import { readFileSync, existsSync, writeFileSync, readdirSync, mkdirSync } from 
 import { createInterface } from "readline";
 import { join, dirname } from "path";
 import { homedir } from "os";
-import { createRequire } from "module";
 import { execSync } from "child_process";
+import {
+  PKG_NAME, RELEASES_URL, box, checkForUpdate, compareVersions, currentVersion, getUpdateInfo,
+} from "./update.js";
 
 // ── ANSI helpers ──────────────────────────────────────────────────────────────
 const c = {
@@ -35,38 +37,10 @@ const fmt = {
 };
 
 // ── Version ───────────────────────────────────────────────────────────────────
-const PKG_NAME = "@stronger-ecommerce/gadget-mcp";
+export { checkForUpdate };
 
-function currentVersion(): string {
-  try {
-    const req = createRequire(import.meta.url);
-    return (req("../package.json") as { version: string }).version;
-  } catch {
-    return "0.0.0";
-  }
-}
-
-export async function checkForUpdate(): Promise<void> {
-  try {
-    const res = await fetch(`https://registry.npmjs.org/${PKG_NAME}/latest`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) return;
-    const { version: latest } = await res.json() as { version: string };
-    const current = currentVersion();
-    if (latest !== current) {
-      const w = 60;
-      const line = "─".repeat(w);
-      console.error(`${c.yellow}${line}${c.reset}`);
-      console.error(`${c.yellow}  Update available: ${c.bold}${current}${c.reset}${c.yellow} → ${c.bold}${latest}${c.reset}`);
-      console.error(`${c.yellow}  Run: ${c.bold}npm i -g ${PKG_NAME}@latest${c.reset}${c.yellow}  or use npx for the latest${c.reset}`);
-      console.error(`${c.yellow}${line}${c.reset}`);
-      console.error();
-    }
-  } catch {
-    // network unavailable — silently skip
-  }
-}
+/** npx package spec written into configs — @latest so npx re-resolves instead of reusing a stale cache */
+const NPX_SPEC = `${PKG_NAME}@latest`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 interface SyncJson {
@@ -134,7 +108,7 @@ function accessEnv(access: Access): Record<string, string> {
 function mcpEntry(appSlug: string, apiKey: string, environment: string, access: Access): McpEntry {
   return {
     command: "npx",
-    args: ["@stronger-ecommerce/gadget-mcp"],
+    args: [NPX_SPEC],
     env: {
       GADGET_APP: appSlug,
       GADGET_API_KEY: apiKey,
@@ -182,7 +156,7 @@ const TOOLS: Tool[] = [
           .map(([k, v]) => `-e ${k}=${v}`),
       ].join(" ");
       const scopeFlag = scope === "project" ? " -s project" : "";
-      const cmd = `claude mcp add${scopeFlag} ${serverName} ${envFlags} -- npx @stronger-ecommerce/gadget-mcp`;
+      const cmd = `claude mcp add${scopeFlag} ${serverName} ${envFlags} -- npx ${NPX_SPEC}`;
       try {
         execSync(cmd, { stdio: "pipe" });
         return null;
@@ -687,6 +661,7 @@ export function runHelp(): void {
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp verify")}     Test a connection without full setup`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp list")}       List all configured Gadget MCP servers`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp uninstall")}  Remove a configured Gadget MCP server`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp upgrade")}    Update to the latest version`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --version")}  Show installed version`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --help")}     Show this help`);
   console.log();
@@ -697,6 +672,7 @@ export function runHelp(): void {
   console.log(`  ${fmt.label("GADGET_ENVIRONMENT")}  ${c.dim}Optional. "production" (default) | "development"${c.reset}`);
   console.log(`  ${fmt.label("GADGET_ALLOW_WRITES")} ${c.dim}Optional. "true" enables create_record, update_record, run_action${c.reset}`);
   console.log(`  ${fmt.label("GADGET_ALLOW_DELETES")}${c.dim}Optional. "true" enables delete_record${c.reset}`);
+  console.log(`  ${fmt.label("GADGET_AUDIT_LOG")}    ${c.dim}Optional. JSONL file path to record every write${c.reset}`);
   console.log();
   console.log(fmt.section("  Quick start", w));
   console.log();
@@ -889,5 +865,113 @@ export async function runUninstall(): Promise<void> {
 
   console.log();
   console.log(fmt.dim("  Restart your editor(s) for changes to take effect."));
+  console.log();
+}
+
+// ── Upgrade ───────────────────────────────────────────────────────────────────
+/** True when an MCP config entry's args point at this package without @latest */
+export function isPinnedEntry(args: string[]): boolean {
+  return args.some((a) => a === PKG_NAME || (a.startsWith(`${PKG_NAME}@`) && a !== NPX_SPEC));
+}
+
+function repinToLatest(filePath: string, serverName: string): void {
+  const config = JSON.parse(readFileSync(filePath, "utf8"));
+  const entry = config.mcpServers[serverName];
+  entry.args = (entry.args as string[]).map((a) =>
+    a === PKG_NAME || a.startsWith(`${PKG_NAME}@`) ? NPX_SPEC : a
+  );
+  writeFileSync(filePath, JSON.stringify(config, null, 2), "utf8");
+}
+
+function globalInstallVersion(): string | null {
+  try {
+    const out = execSync(`npm ls -g ${PKG_NAME} --depth=0 --json`, { stdio: "pipe" }).toString();
+    return JSON.parse(out).dependencies?.[PKG_NAME]?.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function runUpgrade(): Promise<void> {
+  console.log();
+  console.log(fmt.header("  ◆ Gadget MCP — Upgrade"));
+  console.log();
+
+  process.stdout.write(`  Checking npm for the latest version… `);
+  const info = await getUpdateInfo({ force: true });
+  const running = currentVersion();
+  console.log(`${c.green}✔${c.reset}`);
+  console.log();
+
+  if (info) {
+    console.log(fmt.info(`Latest is ${c.bold}${c.green}${info.latest}${c.reset} (this copy is ${running}, a ${info.kind} update).`));
+  } else {
+    console.log(fmt.success(`${c.bold}${running}${c.reset} is the latest version.`));
+  }
+  console.log(fmt.dim(`  Release notes: ${RELEASES_URL}`));
+  console.log();
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+  // 1. Global install
+  const globalVersion = globalInstallVersion();
+  if (globalVersion && info && compareVersions(info.latest, globalVersion) > 0) {
+    const ans = await prompt(rl, `  Global install is ${globalVersion}. Update it with npm? ${c.dim}[Y/n]${c.reset}: `);
+    if (ans.trim().toLowerCase() !== "n") {
+      process.stdout.write(`  Running ${fmt.code(`npm i -g ${NPX_SPEC}`)}… `);
+      try {
+        execSync(`npm i -g ${NPX_SPEC}`, { stdio: "pipe" });
+        console.log(`${c.green}✔${c.reset}`);
+      } catch (err: any) {
+        console.log(`${c.red}✖${c.reset}  ${c.dim}${err?.stderr?.toString()?.trim() || err?.message}${c.reset}`);
+      }
+    }
+    console.log();
+  }
+
+  // 2. Editor configs pinned to a cached / fixed npx version
+  const syncPath = findSyncJson(process.cwd());
+  const projectRoot = syncPath ? dirname(dirname(syncPath)) : null;
+  const pinned: FoundEntry[] = [];
+  for (const { path: filePath, label, isClaudeUserLevel } of allConfigSources(projectRoot)) {
+    if (!existsSync(filePath)) continue;
+    try {
+      const servers: Record<string, any> = JSON.parse(readFileSync(filePath, "utf8")).mcpServers ?? {};
+      const names = new Set(Object.entries(servers).filter(([, e]) => isPinnedEntry(e.args ?? [])).map(([n]) => n));
+      pinned.push(...scanConfigForGadget(filePath, label, isClaudeUserLevel).filter((e) => names.has(e.name)));
+    } catch {
+      // unreadable config — skip
+    }
+  }
+
+  if (pinned.length) {
+    console.log(`  These servers run ${fmt.code(`npx ${PKG_NAME}`)}, which can keep reusing an old cached copy:`);
+    console.log();
+    for (const e of pinned) console.log(`    ${c.cyan}${e.name}${c.reset}  ${c.dim}${e.app} · ${e.source}${c.reset}`);
+    console.log();
+    const ans = await prompt(rl, `  Switch them to ${fmt.code(NPX_SPEC)} so they always start the latest? ${c.dim}[Y/n]${c.reset}: `);
+    if (ans.trim().toLowerCase() !== "n") {
+      for (const e of pinned) {
+        try {
+          repinToLatest(e.configPath, e.name);
+          console.log(fmt.success(`${e.name} ${c.dim}(${e.source})${c.reset}`));
+        } catch (err: any) {
+          console.log(fmt.error(`${e.name}: ${err?.message ?? String(err)}`));
+        }
+      }
+    }
+    console.log();
+  } else {
+    console.log(fmt.success("All detected editor configs already use the latest version."));
+    console.log();
+  }
+
+  rl.close();
+
+  console.log(box([
+    `${c.bold}Restart your editor(s)${c.reset} to load the new version.`,
+    `${c.dim}Claude Code servers added with \`claude mcp add\` aren't edited here —${c.reset}`,
+    `${c.dim}re-run ${c.reset}${c.cyan}npx ${NPX_SPEC} setup${c.reset}${c.dim} to refresh them.${c.reset}`,
+  ], c.green));
   console.log();
 }
