@@ -124,8 +124,8 @@ jobs:
             gh release create "v$VERSION" --title "v$VERSION" --generate-notes --latest
           fi
 
-      # The plugin marketplace (and the Anthropic directory listing) install from the
-      # release branch, so point it at this release. Not fatal: npm is already published.
+      # The marketplace (added as owner/repo@release) and the Anthropic directory listing
+      # follow the release branch, so point it at this release. Not fatal: npm is already published.
       - name: Move the release branch
         continue-on-error: true
         run: git push --force origin HEAD:refs/heads/release
