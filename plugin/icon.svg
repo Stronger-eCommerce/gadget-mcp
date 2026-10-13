@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Gadget MCP">
+  <rect width="256" height="256" rx="56" fill="#1f2937"/>
+  <!-- database stack -->
+  <g fill="none" stroke="#a5b4fc" stroke-width="14" stroke-linecap="round">
+    <ellipse cx="112" cy="78" rx="56" ry="20"/>
+    <path d="M56 78v100c0 11 25 20 56 20"/>
+    <path d="M168 78v38"/>
+    <path d="M56 128c0 11 25 20 56 20"/>
+  </g>
+  <!-- connector spark -->
+  <path d="M182 128l-34 52h28l-12 44 46-62h-30l14-34z" fill="#fbbf24"/>
+</svg>

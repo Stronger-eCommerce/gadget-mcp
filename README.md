@@ -10,10 +10,10 @@ Built by [Stronger eCommerce](https://strongerecommerce.com).
 ## Install as a Claude Code plugin
 
 ```
-/plugin install gadget --marketplace Stronger-eCommerce/gadget-mcp
+/plugin install gadget-mcp --marketplace Stronger-eCommerce/gadget-mcp
 ```
 
-On older Claude Code versions, run `/plugin marketplace add Stronger-eCommerce/gadget-mcp` and then `/plugin install gadget@stronger-ecommerce`.
+On older Claude Code versions, run `/plugin marketplace add Stronger-eCommerce/gadget-mcp` and then `/plugin install gadget-mcp@stronger-ecommerce`. The plugin lives in [`plugin/`](./plugin), and its [README](./plugin/README.md) lists exactly what it runs, sends and stores. See also the [privacy policy](./PRIVACY.md).
 
 Claude Code asks for your app slug and API key when you enable the plugin. The key is stored in your OS keychain. It also asks whether to allow writes and deletes, which models writes may touch, and what to redact. The plugin includes a skill that teaches Claude a safe workflow for these tools. Use `/plugin` to change the settings later.
 
@@ -290,7 +290,7 @@ npm test
 
 ### Releasing (maintainers)
 
-Go to **Actions → Release → Run workflow**, pick `patch`, `minor` or `major`, and run it. This works from the GitHub mobile app too. The workflow tests, bumps the version, tags, publishes to npm with provenance, and creates the GitHub Release with generated notes. Pick `none` to publish the version already in `package.json`. Because `main` only accepts pull requests, the version bump is committed on the release tag rather than on `main`. Each release bumps from the newest published version, so `package.json` on `main` can trail behind without causing problems.
+Go to **Actions → Release → Run workflow**, pick `patch`, `minor` or `major`, and run it. This works from the GitHub mobile app too. The workflow tests, bumps the version, tags, publishes to npm with provenance, and creates the GitHub Release with generated notes. Pick `none` to publish the version already in `package.json`. Because `main` only accepts pull requests, the version bump is committed on the release tag rather than on `main`. Each release bumps from the newest published version, so `package.json` on `main` can trail behind without causing problems. The workflow also pins the plugin's `npx` launcher to the new version and moves the `release` branch to the release commit. The plugin marketplace installs from that branch, and so should the Anthropic directory listing (plugin path `plugin`).
 
 Publishing uses [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers), so there's no npm token to rotate. On npmjs.com the package's trusted publisher is GitHub Actions, `Stronger-eCommerce/gadget-mcp`, workflow `release.yml`.
 

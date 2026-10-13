@@ -136,11 +136,18 @@ describe("HTTP server", () => {
 // ── Claude Code plugin ────────────────────────────────────────────────────────
 describe("plugin manifest", async () => {
   const { readFileSync } = await import("fs");
-  const plugin = JSON.parse(readFileSync(new URL("../../.claude-plugin/plugin.json", import.meta.url), "utf8"));
+  const plugin = JSON.parse(readFileSync(new URL("../../plugin/.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 
-  it("matches the npm package version", () => {
+  it("matches the npm package version and pins npx to it", () => {
     expect(plugin.version).toBe(pkg.version);
+    // The directory rejects unpinned launchers (@latest or ranges)
+    expect(plugin.mcpServers.gadget.args).toContain(`@stronger-ecommerce/gadget-mcp@${pkg.version}`);
+  });
+
+  it("has the directory listing fields", () => {
+    expect(plugin.icon).toBe("./icon.svg");
+    for (const k of ["privacyPolicyUrl", "supportUrl", "documentationUrl"]) expect(plugin[k]).toMatch(/^https:\/\//);
   });
 
   it("passes every user setting through to the server", () => {
