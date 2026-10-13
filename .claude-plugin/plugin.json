@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "gadget",
   "displayName": "Gadget",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Query, debug and (optionally) change data in any Gadget app: records, schema, counts, exports, logs, with optional write/delete tools, PII redaction and an audit log.",
   "author": {
     "name": "Stronger eCommerce",
