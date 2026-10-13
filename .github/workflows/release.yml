@@ -52,6 +52,8 @@ jobs:
             patch|minor|major) npm version "$BUMP" --no-git-tag-version ;;
             *) echo "Publishing the current version without a bump" ;;
           esac
+          # Keep the Claude Code plugin's version in step with npm
+          node -e 'const f=".claude-plugin/plugin.json",fs=require("fs"),p=JSON.parse(fs.readFileSync(f));p.version=require("./package.json").version;fs.writeFileSync(f,JSON.stringify(p,null,2)+"\n")'
           echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
       - name: Make sure this version isn't on npm yet

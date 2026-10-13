@@ -7,6 +7,18 @@ Built by [Stronger eCommerce](https://strongerecommerce.com).
 
 ---
 
+## Install as a Claude Code plugin
+
+```
+/plugin install gadget --marketplace Stronger-eCommerce/gadget-mcp
+```
+
+On older Claude Code versions, run `/plugin marketplace add Stronger-eCommerce/gadget-mcp` and then `/plugin install gadget@stronger-ecommerce`.
+
+Claude Code asks for your app slug and API key when you enable the plugin. The key is stored in your OS keychain. It also asks whether to allow writes and deletes, which models writes may touch, and what to redact. The plugin includes a skill that teaches Claude a safe workflow for these tools. Use `/plugin` to change the settings later.
+
+---
+
 ## Quick setup (recommended)
 
 Run the interactive setup wizard from inside your Gadget project directory.
@@ -114,6 +126,7 @@ Add to `~/.cursor/mcp.json`:
 | `run_graphql`      | Run a raw read-only GraphQL query (mutations are blocked)  |
 | `export_records`   | Export many records (up to 100k) to a CSV or JSON file     |
 | `group_count`      | Count records grouped by a field, e.g. orders by status    |
+| `read_logs`        | Read recent app logs (via `ggt`), filtered by level, time and text |
 | `report_bug`       | Build a pre-filled GitHub bug report link (nothing is posted) |
 
 ### Optional write tools
@@ -162,6 +175,44 @@ fields: "* customer { email } lineItems { edges { node { title quantity } } }"
 - **`export_records`** pages through a model and saves a CSV or JSON file in `GADGET_EXPORT_DIR` (default `~/gadget-mcp-exports`). Nested fields become dot-named columns, e.g. `customer.email`. It returns the path, row count and a preview, and stops at `max_records` (default 10,000, max 100,000).
 - **`group_count`** answers questions like "orders by financial status" in one call. Enum and boolean fields get exact counts per value. Other fields are counted by scanning up to `max_records`, and the result says whether it was exact.
 - **`bulk_update`** (writes on) applies the same change to every record matching a filter, running the model's `update` action on each. Use `dry_run: true` to see how many records match. It refuses when more than `max_records` match (default 100, max 1,000), and `GADGET_WRITE_MODELS` is checked before anything changes.
+
+---
+
+## Logs
+
+`read_logs` fetches recent logs through Gadget's [`ggt` CLI](https://docs.gadget.dev/reference/ggt#ggt-logs). It defaults to the last 15 minutes at `info` level, and you can filter by `since` (`2h`, `1d` or an ISO time), `level`, `search` text, and `my_logs` to show only your own code's logs. `ggt` uses its own login, so run `npx ggt login` once on the machine. Set `GADGET_GGT_COMMAND=ggt` to use a globally installed `ggt` instead of `npx ggt@latest`. Redaction applies to log output too.
+
+---
+
+## Prompts
+
+The server ships ready-made prompts that appear in your client's prompt picker (slash commands in Claude Code):
+
+| Prompt | What it does |
+|---|---|
+| `explore_app` | Plain-English overview of the models, how they relate and how much data each holds |
+| `debug_record` | Investigates one record: fields, related logs and a likely cause |
+| `audit_errors` | Groups recent errors from the logs, with counts and likely causes |
+| `data_health` | Checks a model for missing values and odd statuses |
+
+---
+
+## Remote / HTTP mode
+
+Run the server over HTTP so clients can connect by URL instead of launching it locally:
+
+```bash
+GADGET_APP=my-app GADGET_API_KEY=... GADGET_MCP_HTTP_TOKEN=$(openssl rand -hex 24) \
+  npx @stronger-ecommerce/gadget-mcp@latest serve
+```
+
+| Variable | Default | |
+|---|---|---|
+| `GADGET_MCP_HTTP_PORT` | `3333` | Port |
+| `GADGET_MCP_HTTP_HOST` | `127.0.0.1` | Interface to bind. Anything but localhost **requires** a token |
+| `GADGET_MCP_HTTP_TOKEN` | — | Shared secret: send `Authorization: Bearer <token>`, or use the secret URL `/mcp/<token>` for clients that can't set headers |
+
+The endpoint is `/mcp`, and `/health` answers without auth. Connect from Claude Code with `claude mcp add --transport http my-app-gadget https://host/mcp --header "Authorization: Bearer <token>"`. Put it behind HTTPS (a reverse proxy or tunnel) before exposing it beyond your machine. Anyone with the token can use your Gadget API key with whatever write settings you've enabled.
 
 ---
 
