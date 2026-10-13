@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { buildIssueUrl } from "./report.js";
+import { handleDataTool, DATA_READ_TOOL_DEFINITIONS, DATA_WRITE_TOOL_DEFINITIONS } from "./data-tools.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const GADGET_APP = process.env.GADGET_APP;
@@ -14,7 +15,7 @@ function envFlag(name: string): boolean {
 export const writesEnabled = () => envFlag("GADGET_ALLOW_WRITES");
 export const deletesEnabled = () => envFlag("GADGET_ALLOW_DELETES");
 
-const WRITES_DISABLED_MSG =
+export const WRITES_DISABLED_MSG =
   "Write tools are disabled. Set GADGET_ALLOW_WRITES=true in this MCP server's env to enable create/update/run_action.";
 const DELETES_DISABLED_MSG =
   "Delete is disabled. Set GADGET_ALLOW_DELETES=true in this MCP server's env to enable deleting records.";
@@ -88,7 +89,7 @@ export function _resetCaches() {
   queryFieldsCache = null;
   listFieldCache.clear();
   mutationFieldsCache = null;
-  scalarFieldsCache.clear();
+  modelFieldsCache.clear();
 }
 
 // Reconstruct a type string from a GraphQL __type fragment (handles NON_NULL / LIST nesting)
@@ -99,7 +100,7 @@ function typeString(t: any): string {
   return t.name ?? "String";
 }
 
-async function resolveListField(model: string): Promise<ResolvedListField | null> {
+export async function resolveListField(model: string): Promise<ResolvedListField | null> {
   const cached = listFieldCache.get(model);
   if (cached !== undefined) return cached;
 
@@ -152,18 +153,27 @@ async function resolveListField(model: string): Promise<ResolvedListField | null
   return result;
 }
 
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // ── Field selection: "*" expands to every scalar field ────────────────────────
-const scalarFieldsCache = new Map<string, string[] | null>();
+export interface ModelField {
+  name: string;
+  /** Kind of the field's base type: SCALAR, ENUM, OBJECT, … */
+  kind: string;
+  /** Name of the field's base type, e.g. String, ShopifyOrderFinancialStatusEnum */
+  typeName: string;
+}
 
-function unwrapType(t: any): any {
+const modelFieldsCache = new Map<string, ModelField[] | null>();
+
+export function unwrapType(t: any): any {
   while (t && (t.kind === "NON_NULL" || t.kind === "LIST")) t = t.ofType;
   return t;
 }
 
-async function scalarFields(model: string): Promise<string[] | null> {
-  if (scalarFieldsCache.has(model)) return scalarFieldsCache.get(model)!;
+/** A model's fields with their base types, from introspection (cached). Null if no such type. */
+export async function modelFields(model: string): Promise<ModelField[] | null> {
+  if (modelFieldsCache.has(model)) return modelFieldsCache.get(model)!;
   const data = await gql(`
     query ScalarFields($name: String!) {
       __type(name: $name) {
@@ -171,13 +181,19 @@ async function scalarFields(model: string): Promise<string[] | null> {
       }
     }
   `, { name: capitalize(model) });
-  const fields: string[] | null = data.__type
-    ? (data.__type.fields as any[])
-        .filter((f) => ["SCALAR", "ENUM"].includes(unwrapType(f.type)?.kind))
-        .map((f) => f.name)
+  const fields: ModelField[] | null = data.__type
+    ? (data.__type.fields as any[]).map((f) => {
+        const base = unwrapType(f.type);
+        return { name: f.name, kind: base?.kind ?? "SCALAR", typeName: base?.name ?? "String" };
+      })
     : null;
-  scalarFieldsCache.set(model, fields);
+  modelFieldsCache.set(model, fields);
   return fields;
+}
+
+async function scalarFields(model: string): Promise<string[] | null> {
+  const fields = await modelFields(model);
+  return fields ? fields.filter((f) => f.kind === "SCALAR" || f.kind === "ENUM").map((f) => f.name) : null;
 }
 
 /**
@@ -243,7 +259,7 @@ const ALIAS_BLOCKED_MSG =
   "Field aliases (name: field) are not allowed while GADGET_REDACT_FIELDS is set, since they could bypass redaction. Remove the alias and try again.";
 
 /** JSON text for a data result, with redaction applied */
-const dataText = (data: unknown) => JSON.stringify(redactRecords(data), null, 2);
+export const dataText = (data: unknown) => JSON.stringify(redactRecords(data), null, 2);
 
 // ── Write allowlist (GADGET_WRITE_MODELS) ─────────────────────────────────────
 function writeAllowlist(): string[] {
@@ -311,7 +327,7 @@ function auditLog(entry: Record<string, unknown>): void {
   }
 }
 
-const ERRORS_SELECTION = `errors { message code ... on InvalidRecordError { validationErrors { apiIdentifier message } } }`;
+export const ERRORS_SELECTION = `errors { message code ... on InvalidRecordError { validationErrors { apiIdentifier message } } }`;
 
 function isDeleteAction(name: string): boolean {
   return /^(bulk)?delete/i.test(name);
@@ -321,7 +337,7 @@ function isDeleteAction(name: string): boolean {
  * Execute a Gadget action mutation. Only args the action declares are sent, each typed
  * from introspection. Returns the action result, or an MCP error if success is false.
  */
-async function runMutation(
+export async function runMutation(
   action: string,
   args: Record<string, unknown>,
   selection: string,
@@ -804,8 +820,10 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         };
       }
 
-      default:
-        return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+      default: {
+        const result = await handleDataTool(name, args);
+        return result ?? { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+      }
     }
   } catch (err: any) {
     return {
@@ -1020,7 +1038,9 @@ export function getToolDefinitions() {
     note ? defs.map((d) => ({ ...d, description: d.description + note })) : defs;
   return [
     ...TOOL_DEFINITIONS,
+    ...DATA_READ_TOOL_DEFINITIONS,
     ...(writesEnabled() ? withNote(WRITE_TOOL_DEFINITIONS) : []),
+    ...(writesEnabled() ? withNote(DATA_WRITE_TOOL_DEFINITIONS) : []),
     ...(deletesEnabled() ? withNote(DELETE_TOOL_DEFINITIONS) : []),
   ];
 }
