@@ -5,7 +5,8 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  # Named to match the "build-and-test" required status check on main
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -49,7 +49,20 @@ jobs:
           BUMP: ${{ inputs.bump }}
         run: |
           case "$BUMP" in
-            patch|minor|major) npm version "$BUMP" --no-git-tag-version ;;
+            patch|minor|major)
+              # main is protected, so package.json there can lag behind npm.
+              # Bump from whichever is newer: package.json or the latest published version.
+              PUBLISHED=$(npm view @stronger-ecommerce/gadget-mcp version 2>/dev/null || echo 0.0.0)
+              BASE=$(node -e '
+                const [a, b] = process.argv.slice(1);
+                const n = (v) => v.split("-")[0].split(".").map(Number);
+                const [x, y] = [n(a), n(b)];
+                for (let i = 0; i < 3; i++) if (x[i] !== y[i]) { console.log(x[i] > y[i] ? a : b); process.exit(); }
+                console.log(a);
+              ' "$(node -p 'require("./package.json").version')" "$PUBLISHED")
+              npm version "$BASE" --no-git-tag-version --allow-same-version >/dev/null
+              npm version "$BUMP" --no-git-tag-version
+              ;;
             *) echo "Publishing the current version without a bump" ;;
           esac
           # Keep the Claude Code plugin's version in step with npm
@@ -65,6 +78,9 @@ jobs:
             exit 1
           fi
 
+      # main is protected (changes only via PR), so the version bump lives on the tag:
+      # commit it off-branch and push just the tag. The npm package and GitHub Release
+      # are built from this tagged commit.
       - name: Commit and tag
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -72,8 +88,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet; then
+            git checkout --detach
             git commit -am "chore: release $VERSION"
-            git push origin HEAD:main
           fi
           if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
             echo "Tag v$VERSION already exists — reusing it"
@@ -109,4 +125,6 @@ jobs:
             echo ""
             echo "- npm: https://www.npmjs.com/package/@stronger-ecommerce/gadget-mcp/v/$VERSION"
             echo "- GitHub: https://github.com/${{ github.repository }}/releases/tag/v$VERSION"
+            echo ""
+            echo "_The version bump is on the tag, not main (main is protected). The next release bumps from the newest published version automatically._"
           } >> "$GITHUB_STEP_SUMMARY"
