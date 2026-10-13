@@ -92,6 +92,8 @@ Add to `~/.cursor/mcp.json`:
 | `GADGET_ALLOW_WRITES`  | No     | off          | `true` enables `create_record`, `update_record`, `run_action` |
 | `GADGET_ALLOW_DELETES` | No     | off          | `true` enables `delete_record` (and delete actions via `run_action`) |
 | `GADGET_AUDIT_LOG`     | No     | —            | Path to a JSONL file; every executed write is appended to it |
+| `GADGET_WRITE_MODELS`  | No     | all          | Comma-separated models (or global action names) writes are limited to, e.g. `label,blogPost` |
+| `GADGET_REDACT_FIELDS` | No     | off          | `pii`, or comma-separated field patterns to hide from results, e.g. `email,*phone*` |
 | `GADGET_MCP_NO_UPDATE_CHECK` | No | —          | Set to disable the daily npm update check |
 
 ---
@@ -124,6 +126,8 @@ Off by default. Tools are only listed to the client when their flag is set, and 
 
 Every write tool takes `dry_run: true`, which checks the action and arguments against the schema and returns the exact mutation and variables without changing anything — handy for asking the agent to "show me what you'd do first".
 
+Set `GADGET_WRITE_MODELS=label,blogPost` to limit changes to those models; every other model is refused, even with writes on. Global actions are matched by name, e.g. `GADGET_WRITE_MODELS=label,syncProducts`. The tool descriptions tell the agent which models are allowed.
+
 Set `GADGET_AUDIT_LOG=~/gadget-mcp-audit.jsonl` to keep a local record of every write (timestamp, app, environment, action, variables, success/errors).
 
 Writes go through your Gadget actions, so validations and action code run as normal. The API key's role also needs the matching action permissions — the `setup` wizard asks whether to enable writes/deletes and can create a `gadget-mcp-write` role with them.
@@ -136,6 +140,30 @@ claude mcp add my-app-gadget \
   -e GADGET_ALLOW_DELETES=true \
   -- npx @stronger-ecommerce/gadget-mcp@latest
 ```
+
+---
+
+## Field selection
+
+`query_records` and `get_record` return every scalar field when `fields` is left out. Use `*` to mix all scalars with relations:
+
+```
+fields: "* customer { email } lineItems { edges { node { title quantity } } }"
+```
+
+---
+
+## Hiding personal data
+
+Set `GADGET_REDACT_FIELDS=pii` to replace customer emails, phones, names, addresses, coordinates and IPs with `[REDACTED]` in every result. That includes nested objects and `run_graphql`. You can also list your own patterns, where `*` is a wildcard: `GADGET_REDACT_FIELDS=email,*phone*,taxId`.
+
+You can still *filter* by a redacted field ("find the order for jane@example.com"). The value just never comes back to the agent. While redaction is on, field aliases (`e: email`) are refused so they can't be used to rename a field around it. Treat it as a strong guardrail rather than a security boundary: the API key itself can still read everything.
+
+---
+
+## Rate limits
+
+When Gadget throttles a request (HTTP 429) or is briefly unavailable (502/503/504), the server retries up to 3 times. It honours `Retry-After` when present and otherwise uses exponential backoff.
 
 ---
 

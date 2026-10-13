@@ -97,12 +97,18 @@ interface McpEntry {
 interface Access {
   writes: boolean;
   deletes: boolean;
+  /** Comma-separated models/actions writes are limited to; empty = all */
+  writeModels?: string;
+  /** GADGET_REDACT_FIELDS value, e.g. "pii"; empty = off */
+  redact?: string;
 }
 
 function accessEnv(access: Access): Record<string, string> {
   return {
     ...(access.writes ? { GADGET_ALLOW_WRITES: "true" } : {}),
     ...(access.deletes ? { GADGET_ALLOW_DELETES: "true" } : {}),
+    ...((access.writes || access.deletes) && access.writeModels ? { GADGET_WRITE_MODELS: access.writeModels } : {}),
+    ...(access.redact ? { GADGET_REDACT_FIELDS: access.redact } : {}),
   };
 }
 
@@ -235,7 +241,9 @@ function scanConfigForGadget(filePath: string, sourceLabel: string, isClaudeUser
           "read",
           ...(entry.env?.GADGET_ALLOW_WRITES === "true" ? ["write"] : []),
           ...(entry.env?.GADGET_ALLOW_DELETES === "true" ? ["delete"] : []),
-        ].join("+"),
+        ].join("+")
+          + (entry.env?.GADGET_WRITE_MODELS ? ` (writes: ${entry.env.GADGET_WRITE_MODELS})` : "")
+          + (entry.env?.GADGET_REDACT_FIELDS ? ", redacted" : ""),
         isClaudeUserLevel,
       }));
   } catch {
@@ -453,7 +461,18 @@ export async function runSetup(): Promise<void> {
   };
   if (access.writes || access.deletes) {
     console.log(fmt.warn(`The agent will be able to ${c.bold}change${access.deletes ? " and delete" : ""}${c.reset} data in ${c.bold}${environment}${c.reset}.`));
+    const modelsInput = await prompt(
+      rl,
+      `  Limit changes to specific models? ${c.dim}(comma-separated, e.g. label,blogPost — Enter for all)${c.reset}: `
+    );
+    access.writeModels = modelsInput.split(",").map((m) => m.trim()).filter(Boolean).join(",");
   }
+
+  const redactInput = await prompt(
+    rl,
+    `  Hide customer personal data (emails, phones, names, addresses) from results? ${c.dim}[Y/n]${c.reset}: `
+  );
+  if (redactInput.trim().toLowerCase() !== "n") access.redact = "pii";
 
   // 4. Role setup
   console.log();
@@ -675,6 +694,8 @@ export function runHelp(): void {
   console.log(`  ${fmt.label("GADGET_ALLOW_WRITES")} ${c.dim}Optional. "true" enables create_record, update_record, run_action${c.reset}`);
   console.log(`  ${fmt.label("GADGET_ALLOW_DELETES")}${c.dim}Optional. "true" enables delete_record${c.reset}`);
   console.log(`  ${fmt.label("GADGET_AUDIT_LOG")}    ${c.dim}Optional. JSONL file path to record every write${c.reset}`);
+  console.log(`  ${fmt.label("GADGET_WRITE_MODELS")} ${c.dim}Optional. Limit writes to these models/actions, e.g. "label,blogPost"${c.reset}`);
+  console.log(`  ${fmt.label("GADGET_REDACT_FIELDS")}${c.dim}Optional. "pii" or field patterns to hide, e.g. "email,*phone*"${c.reset}`);
   console.log();
   console.log(fmt.section("  Quick start", w));
   console.log();
