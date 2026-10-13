@@ -14,7 +14,7 @@ Query, debug and (optionally) change data in any [Gadget](https://gadget.dev) ap
 ## Setup
 
 ```
-/plugin install gadget-mcp --marketplace Stronger-eCommerce/gadget-mcp
+/plugin install gadget-mcp --marketplace Stronger-eCommerce/gadget-mcp@release
 ```
 
 When you enable the plugin, Claude Code asks for:

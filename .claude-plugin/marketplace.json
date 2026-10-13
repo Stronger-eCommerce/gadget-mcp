@@ -9,12 +9,7 @@
   "plugins": [
     {
       "name": "gadget-mcp",
-      "source": {
-        "source": "git-subdir",
-        "url": "Stronger-eCommerce/gadget-mcp",
-        "path": "plugin",
-        "ref": "release"
-      },
+      "source": "./plugin",
       "description": "Query, debug and optionally change data in any Gadget app.",
       "category": "development",
       "tags": [
