@@ -25,15 +25,34 @@ export const GRAPHQL_URL =
     : `https://${GADGET_APP}.gadget.app/api/graphql`;
 
 // ── GraphQL helper ────────────────────────────────────────────────────────────
+const MAX_RETRIES = 3;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Overridable in tests so retries don't actually wait */
+export const _retry = { baseDelayMs: 500 };
+
+/** Delay before the next attempt: Retry-After if given (capped at 30s), else exponential backoff. */
+function retryDelay(res: Response, attempt: number): number {
+  const header = res.headers?.get?.("retry-after");
+  const seconds = header ? Number(header) : NaN;
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 30_000);
+  return _retry.baseDelayMs * 2 ** attempt;
+}
+
 export async function gql(query: string, variables?: Record<string, unknown>): Promise<any> {
-  const res = await fetch(GRAPHQL_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${GADGET_API_KEY}`,
-    },
-    body: JSON.stringify({ query, variables }),
-  });
+  let res: Response;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(GRAPHQL_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${GADGET_API_KEY}`,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    // Retry when Gadget throttles (429) or is briefly unavailable (502/503/504)
+    if (![429, 502, 503, 504].includes(res.status) || attempt >= MAX_RETRIES) break;
+    await sleep(retryDelay(res, attempt));
+  }
 
   if (!res.ok) {
     throw new Error(`GraphQL HTTP ${res.status}: ${await res.text()}`);
@@ -69,6 +88,7 @@ export function _resetCaches() {
   queryFieldsCache = null;
   listFieldCache.clear();
   mutationFieldsCache = null;
+  scalarFieldsCache.clear();
 }
 
 // Reconstruct a type string from a GraphQL __type fragment (handles NON_NULL / LIST nesting)
@@ -132,10 +152,110 @@ async function resolveListField(model: string): Promise<ResolvedListField | null
   return result;
 }
 
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// ── Field selection: "*" expands to every scalar field ────────────────────────
+const scalarFieldsCache = new Map<string, string[] | null>();
+
+function unwrapType(t: any): any {
+  while (t && (t.kind === "NON_NULL" || t.kind === "LIST")) t = t.ofType;
+  return t;
+}
+
+async function scalarFields(model: string): Promise<string[] | null> {
+  if (scalarFieldsCache.has(model)) return scalarFieldsCache.get(model)!;
+  const data = await gql(`
+    query ScalarFields($name: String!) {
+      __type(name: $name) {
+        fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+      }
+    }
+  `, { name: capitalize(model) });
+  const fields: string[] | null = data.__type
+    ? (data.__type.fields as any[])
+        .filter((f) => ["SCALAR", "ENUM"].includes(unwrapType(f.type)?.kind))
+        .map((f) => f.name)
+    : null;
+  scalarFieldsCache.set(model, fields);
+  return fields;
+}
+
+/**
+ * Resolve a field selection. Omitted or "*" means all scalar fields; "*" can be mixed with
+ * relations, e.g. "* customer { email }". Only a top-level "*" is expanded.
+ */
+export async function expandFields(model: string, fields?: string): Promise<string> {
+  const selection = fields?.trim() || "*";
+  let depth = 0, hasStar = false, out = "";
+  for (const ch of selection) {
+    if (ch === "{") depth++;
+    if (ch === "}") depth--;
+    if (ch === "*" && depth === 0) { hasStar = true; out += "\u0000"; continue; }
+    out += ch;
+  }
+  if (!hasStar) return selection;
+  const all = await scalarFields(model);
+  if (!all) throw new Error(`No type found for model "${model}". Use list_models to check the name.`);
+  return out.replace(/\u0000/g, all.join(" "));
+}
+
+// ── Personal-data redaction (GADGET_REDACT_FIELDS) ────────────────────────────
+/** Field-name patterns hidden by GADGET_REDACT_FIELDS=pii */
+export const PII_PRESET = [
+  "*email*", "*phone*", "firstName", "lastName", "address", "address1", "address2", "zip",
+  "*Address", "addresses", "latitude", "longitude", "browserIp", "clientIp", "ipAddress",
+];
+
+function redactPatterns(): RegExp[] {
+  const raw = (process.env.GADGET_REDACT_FIELDS ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+  const patterns = raw.flatMap((p) => (p.toLowerCase() === "pii" ? PII_PRESET : [p]));
+  return patterns.map((p) =>
+    new RegExp(`^${p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i")
+  );
+}
+
+export const redactionEnabled = () => redactPatterns().length > 0;
+
+/** Replace values of matching keys anywhere in a result with "[REDACTED]". */
+export function redactRecords(value: unknown, patterns = redactPatterns()): unknown {
+  if (!patterns.length || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => redactRecords(v, patterns));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([k, v]) =>
+      patterns.some((re) => re.test(k)) && v !== null ? [k, "[REDACTED]"] : [k, redactRecords(v, patterns)]
+    )
+  );
+}
+
+/**
+ * Aliases (e.g. "e: email") would let a query rename a redacted field and slip past
+ * key-based redaction, so they're refused while redaction is on. Argument lists and
+ * strings are stripped first, since they legitimately contain colons.
+ */
+function hasAlias(selection: string): boolean {
+  let s = selection.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  let prev;
+  do { prev = s; s = s.replace(/\([^()]*\)/g, ""); } while (s !== prev);
+  return s.includes(":");
+}
+
+const ALIAS_BLOCKED_MSG =
+  "Field aliases (name: field) are not allowed while GADGET_REDACT_FIELDS is set, since they could bypass redaction. Remove the alias and try again.";
+
+/** JSON text for a data result, with redaction applied */
+const dataText = (data: unknown) => JSON.stringify(redactRecords(data), null, 2);
+
+// ── Write allowlist (GADGET_WRITE_MODELS) ─────────────────────────────────────
+function writeAllowlist(): string[] {
+  return (process.env.GADGET_WRITE_MODELS ?? "").split(",").map((m) => m.trim()).filter(Boolean);
+}
+
 // ── Mutation resolver (introspection cache) ───────────────────────────────────
 interface ResolvedMutation {
   name: string;
   args: { name: string; type: string }[];
+  /** Model the action belongs to (from its result type), or null for global actions */
+  model: string | null;
 }
 
 async function resolveMutation(name: string): Promise<ResolvedMutation | null> {
@@ -150,6 +270,10 @@ async function resolveMutation(name: string): Promise<ResolvedMutation | null> {
                 name
                 type { kind name ofType { kind name ofType { kind name ofType { kind name } } } }
               }
+              type {
+                fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } }
+                ofType { fields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+              }
             }
           }
         }
@@ -159,9 +283,15 @@ async function resolveMutation(name: string): Promise<ResolvedMutation | null> {
   }
   const field = mutationFieldsCache!.find((f: any) => f.name === name);
   if (!field) return null;
+  // A model action's result has a field typed as the model (e.g. blogPost: BlogPost);
+  // global actions only return success/errors/result.
+  const modelType = (field.type?.fields ?? field.type?.ofType?.fields ?? [])
+    .map((f: any) => unwrapType(f.type))
+    .find((t: any) => t?.kind === "OBJECT");
   return {
     name: field.name,
     args: (field.args ?? []).map((a: any) => ({ name: a.name, type: typeString(a.type) })),
+    model: modelType?.name ? modelType.name.charAt(0).toLowerCase() + modelType.name.slice(1) : null,
   };
 }
 
@@ -216,6 +346,20 @@ async function runMutation(
     };
   }
 
+  const allow = writeAllowlist().map((m) => m.toLowerCase());
+  if (allow.length) {
+    const target = resolved.model ?? action;
+    if (!allow.includes(target.toLowerCase())) {
+      return {
+        content: [{
+          type: "text",
+          text: `${action} is blocked: ${resolved.model ? `model "${resolved.model}"` : `global action "${action}"`} isn't in GADGET_WRITE_MODELS (${writeAllowlist().join(", ")}).`,
+        }],
+        isError: true,
+      };
+    }
+  }
+
   const used = resolved.args.filter((a) => args[a.name] !== undefined);
   const varsDef = used.length ? `(${used.map((a) => `$${a.name}: ${a.type}`).join(", ")})` : "";
   const argsClause = used.length ? `(${used.map((a) => `${a.name}: $${a.name}`).join(", ")})` : "";
@@ -256,12 +400,10 @@ async function runMutation(
   auditLog({ action, variables, success: result?.success !== false, errors: result?.errors ?? undefined });
 
   return {
-    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    content: [{ type: "text", text: dataText(result) }],
     ...(result?.success === false ? { isError: true } : {}),
   };
 }
-
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // ── Tool handler ──────────────────────────────────────────────────────────────
 export async function handleTool(name: string, args: Record<string, any>): Promise<{
@@ -269,6 +411,11 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
   isError?: boolean;
 }> {
   try {
+    // Any tool's field selection could alias a redacted field, so check them all up front
+    if (redactionEnabled() && typeof args.fields === "string" && hasAlias(args.fields)) {
+      return { content: [{ type: "text", text: ALIAS_BLOCKED_MSG }], isError: true };
+    }
+
     switch (name) {
       case "list_models": {
         const data = await gql(`
@@ -319,9 +466,8 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
       }
 
       case "query_records": {
-        const { model, fields, filter, sort, limit = 10, after } = args as {
+        const { model, filter, sort, limit = 10, after } = args as {
           model: string;
-          fields: string;
           filter?: unknown;
           sort?: unknown;
           limit?: number;
@@ -360,6 +506,7 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
           varsVal.sort = sort;
         }
 
+        const fields = await expandFields(model, args.fields);
         const query = `
           query QueryRecords(${varParts.join(", ")}) {
             ${fieldName}(${argParts.join(", ")}) {
@@ -379,11 +526,11 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         return {
           content: [{
             type: "text",
-            text: JSON.stringify({
+            text: dataText({
               records,
               hasMore: connection.pageInfo.hasNextPage,
               endCursor: connection.pageInfo.endCursor ?? null,
-            }, null, 2),
+            }),
           }],
         };
       }
@@ -429,7 +576,8 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
       }
 
       case "get_record": {
-        const { model, id, fields } = args as { model: string; id: string; fields: string };
+        const { model, id } = args as { model: string; id: string };
+        const fields = await expandFields(model, args.fields);
         const query = `
           query GetRecord($id: GadgetID!) {
             ${model}(id: $id) {
@@ -438,7 +586,7 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
           }
         `;
         const data = await gql(query, { id });
-        return { content: [{ type: "text", text: JSON.stringify(data[model], null, 2) }] };
+        return { content: [{ type: "text", text: dataText(data[model]) }] };
       }
 
       case "introspect_filters": {
@@ -591,8 +739,11 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
             isError: true,
           };
         }
+        if (redactionEnabled() && hasAlias(query.replace(/^\s*(query|subscription)\b[^{]*/i, ""))) {
+          return { content: [{ type: "text", text: ALIAS_BLOCKED_MSG }], isError: true };
+        }
         const data = await gql(query, variables);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+        return { content: [{ type: "text", text: dataText(data) }] };
       }
 
       case "create_record": {
@@ -603,7 +754,7 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         return runMutation(
           `create${capitalize(model)}`,
           { [model]: data },
-          `success ${ERRORS_SELECTION} ${model} { ${fields} }`,
+          `success ${ERRORS_SELECTION} ${model} { ${await expandFields(model, fields)} }`,
           dry_run
         );
       }
@@ -616,7 +767,7 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
         return runMutation(
           `update${capitalize(model)}`,
           { id, [model]: data },
-          `success ${ERRORS_SELECTION} ${model} { ${fields} }`,
+          `success ${ERRORS_SELECTION} ${model} { ${await expandFields(model, fields)} }`,
           dry_run
         );
       }
@@ -690,15 +841,15 @@ export const TOOL_DEFINITIONS = [
   {
     name: "query_records",
     description:
-      "Query records from any Gadget model. Supports filtering, sorting, pagination cursors, and field selection. Use introspect_model first to discover available fields, and introspect_filters to see valid filter shapes.",
+      "Query records from any Gadget model. Supports filtering, sorting, pagination cursors, and field selection (all scalar fields by default). Use introspect_filters to see valid filter shapes.",
     inputSchema: {
       type: "object",
-      required: ["model", "fields"],
+      required: ["model"],
       properties: {
         model: { type: "string", description: "Model name in singular camelCase, e.g. shopifyOrder, label" },
         fields: {
           type: "string",
-          description: "GraphQL field selection, e.g. \"id name email createdAt\"",
+          description: "GraphQL field selection, e.g. \"id name email createdAt\". Omit or use \"*\" for every scalar field; mix with relations like \"* customer { email }\".",
         },
         filter: {
           description: "Filter value — use introspect_filters to discover valid filter fields and shapes.",
@@ -730,11 +881,11 @@ export const TOOL_DEFINITIONS = [
     description: "Get a single Gadget record by ID. Specify the model name, record ID, and fields to return.",
     inputSchema: {
       type: "object",
-      required: ["model", "id", "fields"],
+      required: ["model", "id"],
       properties: {
         model: { type: "string", description: "Model name in camelCase, e.g. shopifyOrder, label" },
         id: { type: "string", description: "Record ID" },
-        fields: { type: "string", description: "GraphQL field selection, e.g. \"id name email createdAt\"" },
+        fields: { type: "string", description: "GraphQL field selection. Omit or use \"*\" for every scalar field; mix with relations like \"* lineItems { edges { node { title } } }\"." },
       },
     },
   },
@@ -804,7 +955,7 @@ const WRITE_TOOL_DEFINITIONS = [
       properties: {
         model: { type: "string", description: "Model name in singular camelCase, e.g. label, shopifyOrder" },
         data: { type: "object", description: "Field values for the new record, e.g. { \"name\": \"VIP\" }" },
-        fields: { type: "string", description: "GraphQL field selection to return for the created record (default \"id\")" },
+        fields: { type: "string", description: "GraphQL field selection to return for the created record (default \"id\", \"*\" for all scalar fields)" },
         dry_run: { type: "boolean", description: "Validate the action and arguments and return the mutation that would run, without changing anything" },
       },
     },
@@ -820,7 +971,7 @@ const WRITE_TOOL_DEFINITIONS = [
         model: { type: "string", description: "Model name in singular camelCase, e.g. label, shopifyOrder" },
         id: { type: "string", description: "Record ID" },
         data: { type: "object", description: "Field values to change, e.g. { \"name\": \"VIP\" }" },
-        fields: { type: "string", description: "GraphQL field selection to return for the updated record (default \"id\")" },
+        fields: { type: "string", description: "GraphQL field selection to return for the updated record (default \"id\", \"*\" for all scalar fields)" },
         dry_run: { type: "boolean", description: "Validate the action and arguments and return the mutation that would run, without changing anything" },
       },
     },
@@ -863,9 +1014,13 @@ const DELETE_TOOL_DEFINITIONS = [
 
 /** Tools exposed to the client, based on which write flags are enabled */
 export function getToolDefinitions() {
+  const allow = writeAllowlist();
+  const note = allow.length ? ` Only these models/actions can be changed: ${allow.join(", ")}.` : "";
+  const withNote = <T extends { description: string }>(defs: T[]): T[] =>
+    note ? defs.map((d) => ({ ...d, description: d.description + note })) : defs;
   return [
     ...TOOL_DEFINITIONS,
-    ...(writesEnabled() ? WRITE_TOOL_DEFINITIONS : []),
-    ...(deletesEnabled() ? DELETE_TOOL_DEFINITIONS : []),
+    ...(writesEnabled() ? withNote(WRITE_TOOL_DEFINITIONS) : []),
+    ...(deletesEnabled() ? withNote(DELETE_TOOL_DEFINITIONS) : []),
   ];
 }

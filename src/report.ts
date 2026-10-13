@@ -43,6 +43,8 @@ export function diagnostics(extra: Record<string, string> = {}): string {
     writes: on("GADGET_ALLOW_WRITES"),
     deletes: on("GADGET_ALLOW_DELETES"),
     "audit log": on("GADGET_AUDIT_LOG"),
+    "write allowlist": on("GADGET_WRITE_MODELS"),
+    redaction: on("GADGET_REDACT_FIELDS"),
     ...extra,
   };
   return Object.entries(lines).map(([k, v]) => `${k}: ${v}`).join("\n");

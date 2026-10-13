@@ -12,7 +12,8 @@ process.env.GADGET_APP = "test-app";
 process.env.GADGET_API_KEY = "test-key-1234";
 
 // Dynamically import so env vars are set first
-const { gql, handleTool, _resetCaches, getToolDefinitions } = await import("../tools.js");
+const { gql, handleTool, _resetCaches, getToolDefinitions, _retry, redactRecords } = await import("../tools.js");
+_retry.baseDelayMs = 0;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function mockGql(data: unknown) {
@@ -35,6 +36,8 @@ beforeEach(() => {
   delete process.env.GADGET_ALLOW_WRITES;
   delete process.env.GADGET_ALLOW_DELETES;
   delete process.env.GADGET_AUDIT_LOG;
+  delete process.env.GADGET_REDACT_FIELDS;
+  delete process.env.GADGET_WRITE_MODELS;
 });
 
 // ── gql helper ────────────────────────────────────────────────────────────────
@@ -592,6 +595,189 @@ describe("report_bug", () => {
 
   it("is always listed, even read-only", () => {
     expect(getToolDefinitions().map((t: any) => t.name)).toContain("report_bug");
+  });
+});
+
+// ── retry on throttling ───────────────────────────────────────────────────────
+describe("gql retries", () => {
+  const throttled = (status = 429, retryAfter: string | null = null) =>
+    mockFetch.mockResolvedValueOnce({
+      ok: false, status, headers: { get: () => retryAfter }, text: async () => "slow down",
+    } as unknown as Response);
+
+  it("retries a throttled request and succeeds", async () => {
+    throttled();
+    throttled(503, "0");
+    mockGql({ ok: true });
+    expect(await gql("query { ok }")).toEqual({ ok: true });
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives up after 3 retries", async () => {
+    for (let i = 0; i < 4; i++) throttled();
+    await expect(gql("query { x }")).rejects.toThrow("GraphQL HTTP 429");
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not retry other errors", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401, headers: { get: () => null }, text: async () => "no" } as unknown as Response);
+    await expect(gql("query { x }")).rejects.toThrow("401");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── automatic field selection ─────────────────────────────────────────────────
+const SCALAR = (name: string) => ({ kind: "SCALAR", name, ofType: null });
+const orderType = {
+  __type: {
+    fields: [
+      { name: "id", type: NON_NULL(SCALAR("GadgetID")) },
+      { name: "email", type: SCALAR("String") },
+      { name: "financialStatus", type: { kind: "ENUM", name: "Status", ofType: null } },
+      { name: "tags", type: { kind: "LIST", name: null, ofType: SCALAR("String") } },
+      { name: "customer", type: { kind: "OBJECT", name: "ShopifyCustomer", ofType: null } },
+    ],
+  },
+};
+
+describe("field selection", () => {
+  it("selects every scalar field when fields is omitted", async () => {
+    mockGql(shopifyOrderIntrospection);
+    mockGql(orderType);
+    mockGql({ shopifyOrders: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } });
+    await handleTool("query_records", { model: "shopifyOrder" });
+    const body = JSON.parse(mockFetch.mock.calls[2][1].body);
+    expect(body.query).toMatch(/node \{\s+id email financialStatus tags\s+\}/);
+    expect(body.query).not.toContain("customer");
+  });
+
+  it("expands * alongside relations and caches the field list", async () => {
+    mockGql(orderType);
+    mockGql({ shopifyOrder: { id: "1" } });
+    mockGql({ shopifyOrder: { id: "2" } });
+    await handleTool("get_record", { model: "shopifyOrder", id: "1", fields: "* customer { email }" });
+    await handleTool("get_record", { model: "shopifyOrder", id: "2", fields: "*" });
+    expect(mockFetch).toHaveBeenCalledTimes(3); // type introspected once
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(body.query).toContain("id email financialStatus tags customer { email }");
+  });
+
+  it("leaves explicit selections untouched", async () => {
+    mockGql({ shopifyOrder: { id: "1" } });
+    await handleTool("get_record", { model: "shopifyOrder", id: "1", fields: "id name" });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── redaction ─────────────────────────────────────────────────────────────────
+describe("redaction", () => {
+  it("hides personal fields anywhere in the result with the pii preset", async () => {
+    process.env.GADGET_REDACT_FIELDS = "pii";
+    mockGql({
+      shopifyOrder: {
+        id: "1", name: "#1001", email: "a@b.com", contactEmail: "x@y.com",
+        customer: { firstName: "Ada", phone: "555", defaultAddress: { city: "X" }, tags: ["vip"] },
+        note: null,
+      },
+    });
+    const result = await handleTool("get_record", { model: "shopifyOrder", id: "1", fields: "id name" });
+    const record = JSON.parse(result.content[0].text);
+    expect(record).toMatchObject({
+      id: "1", name: "#1001", email: "[REDACTED]", contactEmail: "[REDACTED]",
+      customer: { firstName: "[REDACTED]", phone: "[REDACTED]", defaultAddress: "[REDACTED]", tags: ["vip"] },
+      note: null,
+    });
+    expect(result.content[0].text).not.toContain("a@b.com");
+  });
+
+  it("supports custom patterns and leaves data alone when unset", () => {
+    process.env.GADGET_REDACT_FIELDS = "secret*, ssn";
+    expect(redactRecords({ secretNote: "x", SSN: "1", other: "ok" })).toEqual({ secretNote: "[REDACTED]", SSN: "[REDACTED]", other: "ok" });
+    delete process.env.GADGET_REDACT_FIELDS;
+    expect(redactRecords({ email: "a@b.com" })).toEqual({ email: "a@b.com" });
+  });
+
+  it("applies to run_graphql results", async () => {
+    process.env.GADGET_REDACT_FIELDS = "email";
+    mockGql({ shopifyShop: { email: "owner@shop.com" } });
+    const result = await handleTool("run_graphql", { query: "query { shopifyShop { email } }" });
+    expect(JSON.parse(result.content[0].text).shopifyShop.email).toBe("[REDACTED]");
+  });
+
+  it("refuses aliases that could rename a redacted field", async () => {
+    process.env.GADGET_REDACT_FIELDS = "email";
+    const r1 = await handleTool("run_graphql", { query: "query { shopifyShop { e: email } }" });
+    const r2 = await handleTool("get_record", { model: "shopifyOrder", id: "1", fields: "id e: email" });
+    process.env.GADGET_ALLOW_WRITES = "true";
+    const r3 = await handleTool("update_record", { model: "label", id: "1", data: {}, fields: "id e: email" });
+    expect(r1.isError).toBe(true);
+    expect(r2.isError).toBe(true);
+    expect(r3.isError).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("allows colons in arguments and variables", async () => {
+    process.env.GADGET_REDACT_FIELDS = "email";
+    mockGql({ shopifyOrders: { edges: [] } });
+    const result = await handleTool("run_graphql", {
+      query: 'query Q($n: Int) { shopifyOrders(first: $n, filter: { name: { equals: "a:b" } }) { edges { node { id } } } }',
+      variables: { n: 1 },
+    });
+    expect(result.isError).toBeUndefined();
+  });
+});
+
+// ── write allowlist ───────────────────────────────────────────────────────────
+const OBJ = (name: string) => ({ kind: "OBJECT", name, ofType: null });
+const resultType = (model?: string) => ({
+  kind: "OBJECT", name: "Result",
+  fields: [
+    { name: "success", type: NON_NULL(SCALAR("Boolean")) },
+    ...(model ? [{ name: model.charAt(0).toLowerCase() + model.slice(1), type: OBJ(model) }] : [{ name: "result", type: SCALAR("JSON") }]),
+  ],
+});
+const allowlistIntrospection = {
+  __schema: {
+    mutationType: {
+      fields: [
+        { name: "createLabel", args: [{ name: "label", type: { kind: "INPUT_OBJECT", name: "CreateLabelInput", ofType: null } }], type: resultType("Label") },
+        { name: "publishBlogPost", args: [{ name: "id", type: NON_NULL(SCALAR("GadgetID")) }], type: { kind: "NON_NULL", name: null, fields: null, ofType: resultType("BlogPost") } },
+        { name: "syncProducts", args: [], type: resultType() },
+      ],
+    },
+  },
+};
+
+describe("GADGET_WRITE_MODELS", () => {
+  beforeEach(() => {
+    process.env.GADGET_ALLOW_WRITES = "true";
+    process.env.GADGET_WRITE_MODELS = "blogPost, syncProducts";
+  });
+
+  it("blocks models that aren't listed", async () => {
+    mockGql(allowlistIntrospection);
+    const result = await handleTool("create_record", { model: "label", data: { name: "x" } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('model "label"');
+    expect(mockFetch).toHaveBeenCalledTimes(1); // introspection only
+  });
+
+  it("allows actions on listed models, including non-null result types", async () => {
+    mockGql(allowlistIntrospection);
+    mockGql({ publishBlogPost: { success: true, errors: null } });
+    const result = await handleTool("run_action", { action: "publishBlogPost", args: { id: "1" } });
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("matches global actions by name", async () => {
+    mockGql(allowlistIntrospection);
+    const dry = await handleTool("run_action", { action: "syncProducts", dry_run: true });
+    expect(JSON.parse(dry.content[0].text).dryRun).toBe(true);
+  });
+
+  it("lists the allowed models in tool descriptions", () => {
+    const create = getToolDefinitions().find((t: any) => t.name === "create_record")!;
+    expect(create.description).toContain("blogPost, syncProducts");
   });
 });
 
