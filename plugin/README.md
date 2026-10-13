@@ -30,7 +30,7 @@ When you enable the plugin, Claude Code asks for:
 
 ## What it runs, sends and stores
 
-The plugin starts a local MCP server with `npx -y @stronger-ecommerce/gadget-mcp@<pinned version>`, downloaded from the public npm registry. The server's source is in [this repository](https://github.com/Stronger-eCommerce/gadget-mcp).
+The plugin runs a local MCP server with `node`, from the [`@stronger-ecommerce/gadget-mcp`](https://www.npmjs.com/package/@stronger-ecommerce/gadget-mcp) package. When you install the plugin, Claude Code installs that package and its dependencies into the plugin folder from the bundled `package-lock.json`. Every version is pinned and checked against its integrity hash, all downloads come from the public npm registry, and no install scripts run. Nothing is downloaded when the server starts. The server's source is in [this repository](https://github.com/Stronger-eCommerce/gadget-mcp).
 
 **Network requests it makes:**
 - **Your Gadget app** (`https://<app>.gadget.app/api/graphql`, or `<app>--development.gadget.app`): every tool call, authenticated with your API key. Writes happen only when you enable them.

@@ -65,14 +65,11 @@ jobs:
               ;;
             *) echo "Publishing the current version without a bump" ;;
           esac
-          # Keep the Claude Code plugin's version and its pinned npx launcher in step with npm
+          # Keep the Claude Code plugin's version in step with npm
           node -e '
             const fs = require("fs"), f = "plugin/.claude-plugin/plugin.json";
-            const v = require("./package.json").version, p = JSON.parse(fs.readFileSync(f));
-            p.version = v;
-            for (const s of Object.values(p.mcpServers)) {
-              s.args = s.args.map((a) => a.startsWith("@stronger-ecommerce/gadget-mcp@") ? `@stronger-ecommerce/gadget-mcp@${v}` : a);
-            }
+            const p = JSON.parse(fs.readFileSync(f));
+            p.version = require("./package.json").version;
             fs.writeFileSync(f, JSON.stringify(p, null, 2) + "\n");
           '
           echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
@@ -124,9 +121,29 @@ jobs:
             gh release create "v$VERSION" --title "v$VERSION" --generate-notes --latest
           fi
 
+      # The plugin runs the server from plugin/node_modules, which Claude Code installs from
+      # plugin/package-lock.json. Lock it to the version just published (needs it on npm first).
+      - name: Lock the plugin to this release
+        id: plugin_lock
+        continue-on-error: true
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd plugin
+          npm pkg set "dependencies.@stronger-ecommerce/gadget-mcp=$VERSION"
+          for i in 1 2 3 4 5 6; do
+            npm install --package-lock-only --ignore-scripts --no-audit --no-fund && break
+            echo "npm hasn't served $VERSION yet; retrying in 20s"; sleep 20
+          done
+          node -e 'const l=require("./package-lock.json"); const v=l.packages["node_modules/@stronger-ecommerce/gadget-mcp"]?.version; if (v !== process.env.VERSION) { console.error("lockfile has " + v); process.exit(1); }'
+          cd ..
+          git add plugin/package.json plugin/package-lock.json
+          git diff --cached --quiet || git commit -m "chore: lock the Claude plugin to $VERSION"
+
       # The marketplace (added as owner/repo@release) and the Anthropic directory listing
       # follow the release branch, so point it at this release. Not fatal: npm is already published.
       - name: Move the release branch
+        if: steps.plugin_lock.outcome == 'success'
         continue-on-error: true
         run: git push --force origin HEAD:refs/heads/release
 

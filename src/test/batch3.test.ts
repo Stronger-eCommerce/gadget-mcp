@@ -139,10 +139,25 @@ describe("plugin manifest", async () => {
   const plugin = JSON.parse(readFileSync(new URL("../../plugin/.claude-plugin/plugin.json", import.meta.url), "utf8"));
   const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 
-  it("matches the npm package version and pins npx to it", () => {
+  it("matches the npm package version and runs the locked copy", async () => {
     expect(plugin.version).toBe(pkg.version);
-    // The directory rejects unpinned launchers (@latest or ranges)
-    expect(plugin.mcpServers.gadget.args).toContain(`@stronger-ecommerce/gadget-mcp@${pkg.version}`);
+    // Claude Code installs plugin/package-lock.json into the plugin; the server runs from there, no launcher
+    const pluginPkg = JSON.parse(readFileSync(new URL("../../plugin/package.json", import.meta.url), "utf8"));
+    const lock = JSON.parse(readFileSync(new URL("../../plugin/package-lock.json", import.meta.url), "utf8"));
+    expect(pluginPkg.dependencies["@stronger-ecommerce/gadget-mcp"]).toBe(pkg.version);
+    expect(lock.packages["node_modules/@stronger-ecommerce/gadget-mcp"].version).toBe(pkg.version);
+    expect(plugin.mcpServers.gadget.command).toBe("node");
+    expect(plugin.mcpServers.gadget.args).toEqual(["${CLAUDE_PLUGIN_ROOT}/node_modules/@stronger-ecommerce/gadget-mcp/bin/gadget-mcp.js"]);
+  });
+
+  it("locks every plugin dependency to an exact registry version with a hash", async () => {
+    const lock = JSON.parse(readFileSync(new URL("../../plugin/package-lock.json", import.meta.url), "utf8"));
+    const entries = Object.entries(lock.packages as Record<string, any>).filter(([k]) => k);
+    expect(lock.lockfileVersion).toBeGreaterThanOrEqual(2);
+    for (const [, v] of entries) {
+      expect(v.resolved).toMatch(/^https:\/\/registry\.npmjs\.org\//);
+      expect(v.integrity).toMatch(/^sha512-/);
+    }
   });
 
   it("has the directory listing fields", () => {
