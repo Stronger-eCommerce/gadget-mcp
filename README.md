@@ -93,6 +93,7 @@ Add to `~/.cursor/mcp.json`:
 | `GADGET_ALLOW_DELETES` | No     | off          | `true` enables `delete_record` (and delete actions via `run_action`) |
 | `GADGET_AUDIT_LOG`     | No     | —            | Path to a JSONL file; every executed write is appended to it |
 | `GADGET_WRITE_MODELS`  | No     | all          | Comma-separated models (or global action names) writes are limited to, e.g. `label,blogPost` |
+| `GADGET_EXPORT_DIR`    | No     | `~/gadget-mcp-exports` | Where `export_records` saves files |
 | `GADGET_REDACT_FIELDS` | No     | off          | `pii`, or comma-separated field patterns to hide from results, e.g. `email,*phone*` |
 | `GADGET_MCP_NO_UPDATE_CHECK` | No | —          | Set to disable the daily npm update check |
 
@@ -111,6 +112,8 @@ Add to `~/.cursor/mcp.json`:
 | `introspect_actions` | List actions (mutations) and their arguments             |
 | `get_schema_overview` | All models and fields in one call                       |
 | `run_graphql`      | Run a raw read-only GraphQL query (mutations are blocked)  |
+| `export_records`   | Export many records (up to 100k) to a CSV or JSON file     |
+| `group_count`      | Count records grouped by a field, e.g. orders by status    |
 | `report_bug`       | Build a pre-filled GitHub bug report link (nothing is posted) |
 
 ### Optional write tools
@@ -122,6 +125,7 @@ Off by default. Tools are only listed to the client when their flag is set, and 
 | `create_record` | `GADGET_ALLOW_WRITES`  | Run a model's `create` action                                  |
 | `update_record` | `GADGET_ALLOW_WRITES`  | Run a model's `update` action                                  |
 | `run_action`    | `GADGET_ALLOW_WRITES`  | Run any model or global action by name (e.g. `publishBlogPost`) |
+| `bulk_update`   | `GADGET_ALLOW_WRITES`  | Update every record matching a filter (dry run first, capped at `max_records`) |
 | `delete_record` | `GADGET_ALLOW_DELETES` | Run a model's `delete` action                                  |
 
 Every write tool takes `dry_run: true`, which checks the action and arguments against the schema and returns the exact mutation and variables without changing anything — handy for asking the agent to "show me what you'd do first".
@@ -150,6 +154,14 @@ claude mcp add my-app-gadget \
 ```
 fields: "* customer { email } lineItems { edges { node { title quantity } } }"
 ```
+
+---
+
+## Working with lots of records
+
+- **`export_records`** pages through a model and saves a CSV or JSON file in `GADGET_EXPORT_DIR` (default `~/gadget-mcp-exports`). Nested fields become dot-named columns, e.g. `customer.email`. It returns the path, row count and a preview, and stops at `max_records` (default 10,000, max 100,000).
+- **`group_count`** answers questions like "orders by financial status" in one call. Enum and boolean fields get exact counts per value. Other fields are counted by scanning up to `max_records`, and the result says whether it was exact.
+- **`bulk_update`** (writes on) applies the same change to every record matching a filter, running the model's `update` action on each. Use `dry_run: true` to see how many records match. It refuses when more than `max_records` match (default 100, max 1,000), and `GADGET_WRITE_MODELS` is checked before anything changes.
 
 ---
 
