@@ -683,6 +683,7 @@ export function runHelp(): void {
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp uninstall")}  Remove a configured Gadget MCP server`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp upgrade")}    Update to the latest version`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp bug")}        Report a bug (opens a pre-filled GitHub issue)`);
+  console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp serve")}      Serve over HTTP for remote clients (see README)`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --version")}  Show installed version`);
   console.log(`  ${fmt.code("npx @stronger-ecommerce/gadget-mcp --help")}     Show this help`);
   console.log();

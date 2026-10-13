@@ -2,11 +2,12 @@ import { appendFileSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { buildIssueUrl } from "./report.js";
 import { handleDataTool, DATA_READ_TOOL_DEFINITIONS, DATA_WRITE_TOOL_DEFINITIONS } from "./data-tools.js";
+import { handleLogsTool, LOGS_TOOL_DEFINITIONS } from "./logs.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const GADGET_APP = process.env.GADGET_APP;
 const GADGET_API_KEY = process.env.GADGET_API_KEY;
-const GADGET_ENVIRONMENT = process.env.GADGET_ENVIRONMENT ?? "production";
+const GADGET_ENVIRONMENT = process.env.GADGET_ENVIRONMENT || "production";
 
 // Write access is opt-in. Read at call time so the server (and tests) can toggle it via env.
 function envFlag(name: string): boolean {
@@ -821,7 +822,7 @@ export async function handleTool(name: string, args: Record<string, any>): Promi
       }
 
       default: {
-        const result = await handleDataTool(name, args);
+        const result = (await handleDataTool(name, args)) ?? (await handleLogsTool(name, args));
         return result ?? { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
       }
     }
@@ -1039,6 +1040,7 @@ export function getToolDefinitions() {
   return [
     ...TOOL_DEFINITIONS,
     ...DATA_READ_TOOL_DEFINITIONS,
+    ...LOGS_TOOL_DEFINITIONS,
     ...(writesEnabled() ? withNote(WRITE_TOOL_DEFINITIONS) : []),
     ...(writesEnabled() ? withNote(DATA_WRITE_TOOL_DEFINITIONS) : []),
     ...(deletesEnabled() ? withNote(DELETE_TOOL_DEFINITIONS) : []),

@@ -15,6 +15,8 @@ if (cmd === "--version" || cmd === "-v" || cmd === "version") {
   import("../dist/setup.js").then(({ runUpgrade }) => runUpgrade()).catch(die);
 } else if (cmd === "bug" || cmd === "report") {
   import("../dist/setup.js").then(({ runBug }) => runBug()).catch(die);
+} else if (cmd === "serve") {
+  import("../dist/http.js").then(({ startHttpServer }) => startHttpServer()).catch(die);
 } else if (cmd === "uninstall") {
   import("../dist/setup.js").then(({ runUninstall }) => runUninstall()).catch(die);
 } else {

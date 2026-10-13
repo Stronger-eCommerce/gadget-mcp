@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "gadget",
+  "displayName": "Gadget",
+  "version": "1.3.0",
+  "description": "Query, debug and (optionally) change data in any Gadget app: records, schema, counts, exports, logs, with optional write/delete tools, PII redaction and an audit log.",
+  "author": {
+    "name": "Stronger eCommerce",
+    "url": "https://strongerecommerce.com"
+  },
+  "homepage": "https://github.com/Stronger-eCommerce/gadget-mcp#readme",
+  "repository": "https://github.com/Stronger-eCommerce/gadget-mcp",
+  "license": "MIT",
+  "keywords": [
+    "gadget",
+    "shopify",
+    "mcp",
+    "database",
+    "debugging"
+  ],
+  "userConfig": {
+    "app": {
+      "type": "string",
+      "title": "Gadget app slug",
+      "description": "The subdomain of your app, e.g. my-app for my-app.gadget.app",
+      "required": true
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Gadget API key",
+      "description": "From <app>.gadget.app/edit/settings/api-keys. Give the key a role with read access (and action permissions if you enable writes).",
+      "required": true,
+      "sensitive": true
+    },
+    "environment": {
+      "type": "string",
+      "title": "Environment",
+      "description": "production or development",
+      "default": "production"
+    },
+    "allow_writes": {
+      "type": "boolean",
+      "title": "Allow writes",
+      "description": "Enable create_record, update_record, bulk_update and run_action",
+      "default": false
+    },
+    "allow_deletes": {
+      "type": "boolean",
+      "title": "Allow deletes",
+      "description": "Enable delete_record and delete actions",
+      "default": false
+    },
+    "write_models": {
+      "type": "string",
+      "title": "Limit writes to models",
+      "description": "Optional comma-separated models (or global action names) that writes may touch, e.g. label,blogPost. Leave empty for all.",
+      "default": ""
+    },
+    "redact_fields": {
+      "type": "string",
+      "title": "Hide personal data",
+      "description": "\"pii\" hides emails, phones, names and addresses from results; or list field patterns like email,*phone*. Leave empty to show everything.",
+      "default": "pii"
+    }
+  },
+  "mcpServers": {
+    "gadget": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@stronger-ecommerce/gadget-mcp@latest"
+      ],
+      "env": {
+        "GADGET_APP": "${user_config.app}",
+        "GADGET_API_KEY": "${user_config.api_key}",
+        "GADGET_ENVIRONMENT": "${user_config.environment}",
+        "GADGET_ALLOW_WRITES": "${user_config.allow_writes}",
+        "GADGET_ALLOW_DELETES": "${user_config.allow_deletes}",
+        "GADGET_WRITE_MODELS": "${user_config.write_models}",
+        "GADGET_REDACT_FIELDS": "${user_config.redact_fields}"
+      }
+    }
+  }
+}

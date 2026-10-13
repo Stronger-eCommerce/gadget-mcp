@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "stronger-ecommerce",
+  "owner": {
+    "name": "Stronger eCommerce",
+    "url": "https://strongerecommerce.com"
+  },
+  "description": "Claude plugins by Stronger eCommerce",
+  "plugins": [
+    {
+      "name": "gadget",
+      "source": "./",
+      "description": "Query, debug and (optionally) change data in any Gadget app.",
+      "category": "development",
+      "tags": ["gadget", "shopify", "database"]
+    }
+  ]
+}
