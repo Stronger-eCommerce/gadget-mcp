@@ -1,9 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
-  "name": "gadget",
-  "displayName": "Gadget",
-  "version": "1.3.0",
-  "description": "Query, debug and (optionally) change data in any Gadget app: records, schema, counts, exports, logs, with optional write/delete tools, PII redaction and an audit log.",
+  "name": "gadget-mcp",
+  "displayName": "Gadget MCP (Stronger eCommerce)",
+  "version": "1.4.0",
+  "description": "Query, debug and optionally change data in any Gadget app: records, schema, counts, exports and logs, with opt-in write/delete tools, PII redaction and an audit log. Community plugin by Stronger eCommerce; not affiliated with Gadget.",
   "author": {
     "name": "Stronger eCommerce",
     "url": "https://strongerecommerce.com"
@@ -18,6 +18,10 @@
     "database",
     "debugging"
   ],
+  "icon": "./icon.svg",
+  "documentationUrl": "https://github.com/Stronger-eCommerce/gadget-mcp#readme",
+  "supportUrl": "https://github.com/Stronger-eCommerce/gadget-mcp/issues",
+  "privacyPolicyUrl": "https://github.com/Stronger-eCommerce/gadget-mcp/blob/main/PRIVACY.md",
   "userConfig": {
     "app": {
       "type": "string",
@@ -68,7 +72,7 @@
       "command": "npx",
       "args": [
         "-y",
-        "@stronger-ecommerce/gadget-mcp@latest"
+        "@stronger-ecommerce/gadget-mcp@1.4.0"
       ],
       "env": {
         "GADGET_APP": "${user_config.app}",

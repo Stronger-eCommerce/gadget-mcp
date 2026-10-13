@@ -8,11 +8,23 @@
   "description": "Claude plugins by Stronger eCommerce",
   "plugins": [
     {
-      "name": "gadget",
-      "source": "./",
-      "description": "Query, debug and (optionally) change data in any Gadget app.",
+      "name": "gadget-mcp",
+      "source": {
+        "source": "git-subdir",
+        "url": "Stronger-eCommerce/gadget-mcp",
+        "path": "plugin",
+        "ref": "release"
+      },
+      "description": "Query, debug and optionally change data in any Gadget app.",
       "category": "development",
-      "tags": ["gadget", "shopify", "database"]
+      "tags": [
+        "gadget",
+        "shopify",
+        "database"
+      ]
     }
-  ]
+  ],
+  "renames": {
+    "gadget": "gadget-mcp"
+  }
 }
