@@ -69,10 +69,9 @@
   },
   "mcpServers": {
     "gadget": {
-      "command": "npx",
+      "command": "node",
       "args": [
-        "-y",
-        "@stronger-ecommerce/gadget-mcp@1.4.0"
+        "${CLAUDE_PLUGIN_ROOT}/node_modules/@stronger-ecommerce/gadget-mcp/bin/gadget-mcp.js"
       ],
       "env": {
         "GADGET_APP": "${user_config.app}",

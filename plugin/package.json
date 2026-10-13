@@ -1,0 +1,9 @@
+{
+  "name": "gadget-mcp-claude-plugin",
+  "private": true,
+  "description": "Pins the gadget-mcp server for the Claude Code plugin. Claude Code installs it from package-lock.json when the plugin is installed.",
+  "license": "MIT",
+  "dependencies": {
+    "@stronger-ecommerce/gadget-mcp": "1.4.0"
+  }
+}
